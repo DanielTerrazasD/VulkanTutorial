@@ -1,0 +1,12 @@
+
+
+
+
+# Ignoring common names for output build directories
+out/
+output/
+build/
+
+# Ignoring common IDE folders
+.vs/
+.vscode/
