@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <cstdlib>
 #include <vector>
+#include <optional>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -64,6 +65,16 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
     }
 }
 
+struct QueueFamilyIndices
+{
+    std::optional<uint32_t> mGraphicsFamily;
+
+    bool IsComplete()
+    {
+        return mGraphicsFamily.has_value();
+    }
+};
+
 class HelloTriangleApp
 {
 public:
@@ -80,6 +91,7 @@ private:
 
     VkInstance mInstance;
     VkDebugUtilsMessengerEXT mDebugMessenger;
+    VkPhysicalDevice mPhysicalDevice = VK_NULL_HANDLE;
 
     /**
      * @brief GLFW Window Initialization.
@@ -128,6 +140,29 @@ private:
     std::vector<const char*> GetRequiredExtensions();
 
     /**
+     * @brief Find and initialize a Vulkan Physical Device object.
+     * 
+     */
+    void PickPhysicalDevice();
+
+    /**
+     * @brief Evaluate if the given device complies with the features of our application.
+     * 
+     * @param device Vulkan Physical Device.
+     * @return True if physical device is suitable for our application.
+     * @return False, otherwise.
+     */
+    bool IsDeviceSuitable(VkPhysicalDevice device);
+
+    /**
+     * @brief Find and initialize the family indices for the queues our application needs.
+     * 
+     * @param device Vulkan Physical Device.
+     * @return QueueFamilyIndices.
+     */
+    QueueFamilyIndices FindQueueFamilies(VkPhysicalDevice device);
+
+    /**
      * @brief Debug callback triggered by the validation layer.
      * 
      * VKAPI_ATTR and VKAPI_CALL ensure that the function has the right signature for Vulkan to call it.
@@ -174,6 +209,7 @@ void HelloTriangleApp::InitVulkan()
 {
     CreateInstance();
     SetupDebugMessenger();
+    PickPhysicalDevice();
 }
 
 void HelloTriangleApp::CreateInstance()
@@ -317,6 +353,66 @@ std::vector<const char*> HelloTriangleApp::GetRequiredExtensions()
     }
 
     return extensions;
+}
+
+void HelloTriangleApp::PickPhysicalDevice()
+{
+    uint32_t deviceCount = 0;
+    vkEnumeratePhysicalDevices(mInstance, &deviceCount, nullptr);
+
+    if (deviceCount == 0)
+    {
+        throw std::runtime_error("failed to find GPUs with Vulkan support!");
+    }
+
+    std::vector<VkPhysicalDevice> devices(deviceCount);
+    vkEnumeratePhysicalDevices(mInstance, &deviceCount, devices.data());
+
+    for (const auto& device : devices)
+    {
+        if (IsDeviceSuitable(device))
+        {
+            mPhysicalDevice = device;
+            break;
+        }
+    }
+
+    if (mPhysicalDevice == VK_NULL_HANDLE)
+    {
+        throw std::runtime_error("Failed to find a suitable GPU!");
+    }
+}
+
+bool HelloTriangleApp::IsDeviceSuitable(VkPhysicalDevice device)
+{
+    QueueFamilyIndices indices = FindQueueFamilies(device);
+    return indices.IsComplete();
+}
+
+QueueFamilyIndices HelloTriangleApp::FindQueueFamilies(VkPhysicalDevice device)
+{
+    QueueFamilyIndices indices;
+
+    uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+    int i = 0;
+    for (const auto& queueFamily : queueFamilies)
+    {
+        if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)
+        {
+            indices.mGraphicsFamily = i;
+        }
+        if (indices.IsComplete())
+        {
+            break;
+        }
+        i++;
+    }
+
+    return indices;
 }
 
 VKAPI_ATTR VkBool32 VKAPI_CALL HelloTriangleApp::DebugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
