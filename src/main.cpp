@@ -91,7 +91,14 @@ private:
 
     VkInstance mInstance;
     VkDebugUtilsMessengerEXT mDebugMessenger;
+
+    // The physical device is implicitly destroyed when the VkInstance is destroyed.
     VkPhysicalDevice mPhysicalDevice = VK_NULL_HANDLE;
+
+    VkDevice mDevice; // Logical Device
+    // Queues are automatically created along with the logical device, but we need a handle to interface with them.
+    // Also, device queues are implicitly cleaned up when the device is destroyed.
+    VkQueue mGraphicsQueue;
 
     /**
      * @brief GLFW Window Initialization.
@@ -163,6 +170,12 @@ private:
     QueueFamilyIndices FindQueueFamilies(VkPhysicalDevice device);
 
     /**
+     * @brief Create and initialize a Logical Device object
+     * 
+     */
+    void CreateLogicalDevice();
+
+    /**
      * @brief Debug callback triggered by the validation layer.
      * 
      * VKAPI_ATTR and VKAPI_CALL ensure that the function has the right signature for Vulkan to call it.
@@ -210,6 +223,7 @@ void HelloTriangleApp::InitVulkan()
     CreateInstance();
     SetupDebugMessenger();
     PickPhysicalDevice();
+    CreateLogicalDevice();
 }
 
 void HelloTriangleApp::CreateInstance()
@@ -415,6 +429,59 @@ QueueFamilyIndices HelloTriangleApp::FindQueueFamilies(VkPhysicalDevice device)
     return indices;
 }
 
+void HelloTriangleApp::CreateLogicalDevice()
+{
+    // VkDeviceQueueCreateInfo struct:
+    // Specify the number of queues the application needs for a single queue family (usually only one).
+    QueueFamilyIndices indices = FindQueueFamilies(mPhysicalDevice);
+    VkDeviceQueueCreateInfo queueCreateInfo{};
+    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queueCreateInfo.queueFamilyIndex = indices.mGraphicsFamily.value();
+    queueCreateInfo.queueCount = 1;
+
+    // Assign priority to queue to influence the scheduling of command buffer execution using floating
+    // point numbers between 0.0 and 1.0 (the higher value, the higher priority).
+    float queuePriority = 1.0f;
+    queueCreateInfo.pQueuePriorities = &queuePriority;
+
+    // Specify the feature we need from the physical device.
+    // Leaving as default for now.
+    VkPhysicalDeviceFeatures deviceFeatures{};
+
+    // VkDeviceCreateInfo struct:
+    // Information required by the driver to create the logical device.
+    VkDeviceCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    createInfo.pQueueCreateInfos = &queueCreateInfo;
+    createInfo.queueCreateInfoCount = 1;
+    createInfo.pEnabledFeatures = &deviceFeatures;
+
+    // Previous implementations of Vulkan made a distinction between instance and device specific
+    // validation layers, but this is no longer the case. That means that the enabledLayerCount and
+    // ppEnabledLayerNames fields of VkDeviceCreateInfo are ignored by up-to-date implementations.
+    // However, it is still a good idea to set them anyway to be compatible with older implementations.
+    // We won't be needing any device specific extensions for now.
+    createInfo.enabledExtensionCount = 0;
+    if (kEnableValidationLayers)
+    {
+        createInfo.enabledLayerCount = static_cast<uint32_t>(kValidationLayers.size());
+        createInfo.ppEnabledLayerNames = kValidationLayers.data();
+    }
+    else
+    {
+        createInfo.enabledLayerCount = 0;
+    }
+
+    // Issue the Vulkan create logical device call and check for errors:
+    if (vkCreateDevice(mPhysicalDevice, &createInfo, nullptr, &mDevice) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create logical device!");
+    }
+
+    // Retrieve queue handles for each queue family.
+    vkGetDeviceQueue(mDevice, indices.mGraphicsFamily.value(), 0, &mGraphicsQueue);
+}
+
 VKAPI_ATTR VkBool32 VKAPI_CALL HelloTriangleApp::DebugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                                 VkDebugUtilsMessageTypeFlagsEXT messageType,
                                                                 const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
@@ -439,6 +506,8 @@ void HelloTriangleApp::MainLoop()
 
 void HelloTriangleApp::Cleanup()
 {
+    vkDestroyDevice(mDevice, nullptr);
+
     if (kEnableValidationLayers)
     {
         DestroyDebugUtilsMessengerEXT(mInstance, mDebugMessenger, nullptr);
