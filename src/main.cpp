@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <vector>
 #include <optional>
+#include <set>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -68,10 +69,12 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
 struct QueueFamilyIndices
 {
     std::optional<uint32_t> mGraphicsFamily;
+    std::optional<uint32_t> mPresentationFamily;
 
     bool IsComplete()
     {
-        return mGraphicsFamily.has_value();
+        return  mGraphicsFamily.has_value() &&
+                mPresentationFamily.has_value();
     }
 };
 
@@ -99,6 +102,9 @@ private:
     // Queues are automatically created along with the logical device, but we need a handle to interface with them.
     // Also, device queues are implicitly cleaned up when the device is destroyed.
     VkQueue mGraphicsQueue;
+    VkQueue mPresentationQueue;
+
+    VkSurfaceKHR mSurface;
 
     /**
      * @brief GLFW Window Initialization.
@@ -123,6 +129,12 @@ private:
      * 
      */
     void SetupDebugMessenger();
+
+    /**
+     * @brief Create and initialize a VkSurfaceKHR object.
+     * 
+     */
+    void CreateSurface();
 
     /**
      * @brief Fill the given VkDebugUtilsMessengerCreateInfoEXT struct with the appropiate configuration.
@@ -222,6 +234,7 @@ void HelloTriangleApp::InitVulkan()
 {
     CreateInstance();
     SetupDebugMessenger();
+    CreateSurface();
     PickPhysicalDevice();
     CreateLogicalDevice();
 }
@@ -308,6 +321,25 @@ void HelloTriangleApp::SetupDebugMessenger()
     if (CreateDebugUtilsMessengerEXT(mInstance, &createInfo, nullptr, &mDebugMessenger) != VK_SUCCESS)
     {
         throw std::runtime_error("Failed to set up debug messenger!");
+    }
+}
+
+void HelloTriangleApp::CreateSurface()
+{
+    // Although the VkSurfaceKHR object and its usage is platform agnostic, its creation isn’t
+    // because it depends on window system details.
+    // Because a window surface is a Vulkan object, it comes with a VkWin32SurfaceCreateInfoKHR struct
+    // that needs to be filled in.
+    // After that the surface can be created with vkCreateWin32SurfaceKHR.
+    // Technically this is a WSI (Window System Integration) extension function, but it is so commonly
+    // used that the standard Vulkan loader includes it, so unlike other extensions you don’t need to
+    // explicitly load it.
+    // The glfwCreateWindowSurface function performs exactly this operation with a different implementation
+    // for each platform. It takes simple parameters instead of a struct which makes the implementation
+    // of the function very straightforward:
+    if (glfwCreateWindowSurface(mInstance, mWindow, nullptr, &mSurface) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create window surface!");
     }
 }
 
@@ -415,9 +447,17 @@ QueueFamilyIndices HelloTriangleApp::FindQueueFamilies(VkPhysicalDevice device)
     int i = 0;
     for (const auto& queueFamily : queueFamilies)
     {
+        // Check if queue family has Graphics capabilities.
         if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)
         {
             indices.mGraphicsFamily = i;
+        }
+        // Check if queue family that has the capability of presenting to our window surface.
+        VkBool32 presentSupport = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, mSurface, &presentSupport);
+        if (presentSupport)
+        {
+            indices.mPresentationFamily = i;
         }
         if (indices.IsComplete())
         {
@@ -431,18 +471,28 @@ QueueFamilyIndices HelloTriangleApp::FindQueueFamilies(VkPhysicalDevice device)
 
 void HelloTriangleApp::CreateLogicalDevice()
 {
+    QueueFamilyIndices indices = FindQueueFamilies(mPhysicalDevice);
+    std::set<uint32_t> uniqueQueueFamilies =
+    {
+        indices.mGraphicsFamily.value(),
+        indices.mPresentationFamily.value()
+    };
+
     // VkDeviceQueueCreateInfo struct:
     // Specify the number of queues the application needs for a single queue family (usually only one).
-    QueueFamilyIndices indices = FindQueueFamilies(mPhysicalDevice);
-    VkDeviceQueueCreateInfo queueCreateInfo{};
-    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo.queueFamilyIndex = indices.mGraphicsFamily.value();
-    queueCreateInfo.queueCount = 1;
-
+    std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     // Assign priority to queue to influence the scheduling of command buffer execution using floating
     // point numbers between 0.0 and 1.0 (the higher value, the higher priority).
     float queuePriority = 1.0f;
-    queueCreateInfo.pQueuePriorities = &queuePriority;
+    for (uint32_t queueFamily : uniqueQueueFamilies)
+    {
+        VkDeviceQueueCreateInfo queueCreateInfo{};
+        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueCreateInfo.queueFamilyIndex = indices.mGraphicsFamily.value();
+        queueCreateInfo.queueCount = 1;
+        queueCreateInfo.pQueuePriorities = &queuePriority;
+        queueCreateInfos.push_back(queueCreateInfo);
+    }
 
     // Specify the feature we need from the physical device.
     // Leaving as default for now.
@@ -452,8 +502,8 @@ void HelloTriangleApp::CreateLogicalDevice()
     // Information required by the driver to create the logical device.
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pQueueCreateInfos = &queueCreateInfo;
-    createInfo.queueCreateInfoCount = 1;
+    createInfo.pQueueCreateInfos = queueCreateInfos.data();
+    createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());;
     createInfo.pEnabledFeatures = &deviceFeatures;
 
     // Previous implementations of Vulkan made a distinction between instance and device specific
@@ -480,6 +530,7 @@ void HelloTriangleApp::CreateLogicalDevice()
 
     // Retrieve queue handles for each queue family.
     vkGetDeviceQueue(mDevice, indices.mGraphicsFamily.value(), 0, &mGraphicsQueue);
+    vkGetDeviceQueue(mDevice, indices.mPresentationFamily.value(), 0, &mPresentationQueue);
 }
 
 VKAPI_ATTR VkBool32 VKAPI_CALL HelloTriangleApp::DebugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -512,6 +563,9 @@ void HelloTriangleApp::Cleanup()
     {
         DestroyDebugUtilsMessengerEXT(mInstance, mDebugMessenger, nullptr);
     }
+
+    // Destroy Surface before Instance.
+    vkDestroySurfaceKHR(mInstance, mSurface, nullptr);
 
     // VkInstance should be only destroyed right before the program exits.
     vkDestroyInstance(mInstance, nullptr);
