@@ -133,6 +133,8 @@ private:
     VkFormat mSwapChainImageFormat;
     VkExtent2D mSwapChainExtent;
 
+    std::vector<VkImageView> mSwapChainImageViews;
+
     /**
      * @brief GLFW Window Initialization.
      * 
@@ -237,6 +239,13 @@ private:
     void CreateSwapChain();
 
     /**
+     * @brief Create and initialize some VkImageView objects (according to the number of VkImages in the
+     * swap chain).
+     * 
+     */
+    void CreateImageViews();
+
+    /**
      * @brief Find and initialize a Vulkan Physical Device object.
      * 
      */
@@ -316,6 +325,7 @@ void HelloTriangleApp::InitVulkan()
     PickPhysicalDevice();
     CreateLogicalDevice();
     CreateSwapChain();
+    CreateImageViews();
 }
 
 void HelloTriangleApp::CreateInstance()
@@ -675,6 +685,42 @@ void HelloTriangleApp::CreateSwapChain()
     mSwapChainExtent = extent;
 }
 
+void HelloTriangleApp::CreateImageViews()
+{
+    mSwapChainImageViews.resize(mSwapChainImages.size());
+
+    for (size_t i = 0; i < mSwapChainImages.size(); i++)
+    {
+        // VkImageViewCreateInfo struct:
+        // Information required by the driver to create an image view.
+        VkImageViewCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        createInfo.image = mSwapChainImages[i];
+        // The viewType and format fields specify how the image data should be interpreted.
+        // The viewType parameter allows you to treat images as 1D, 2D, 3D textures and cube maps.
+        createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        createInfo.format = mSwapChainImageFormat;
+        // The components field allows you to swizzle the color channels around.
+        // For example, you can map all of the channels to the red channel for a monochrome texture.
+        createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        // The subresourceRange field describes what the image's purpose is and which part of the image should be accessed.
+        // Our images will be used as color targets without any mipmapping levels or multiple layers.
+        createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        createInfo.subresourceRange.baseMipLevel = 0;
+        createInfo.subresourceRange.levelCount = 1;
+        createInfo.subresourceRange.baseArrayLayer = 0;
+        createInfo.subresourceRange.layerCount = 1;
+        // Issue the Vulkan create image view call and check for errors:
+        if (vkCreateImageView(mDevice, &createInfo, nullptr, &mSwapChainImageViews[i]) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create image views!");
+        }
+    }
+}
+
 void HelloTriangleApp::PickPhysicalDevice()
 {
     uint32_t deviceCount = 0;
@@ -682,7 +728,7 @@ void HelloTriangleApp::PickPhysicalDevice()
 
     if (deviceCount == 0)
     {
-        throw std::runtime_error("failed to find GPUs with Vulkan support!");
+        throw std::runtime_error("Failed to find GPUs with Vulkan support!");
     }
 
     std::vector<VkPhysicalDevice> devices(deviceCount);
@@ -843,6 +889,11 @@ void HelloTriangleApp::MainLoop()
 
 void HelloTriangleApp::Cleanup()
 {
+    for (auto imageView : mSwapChainImageViews)
+    {
+        vkDestroyImageView(mDevice, imageView, nullptr);
+    }
+
     vkDestroySwapchainKHR(mDevice, mSwapChain, nullptr);
     vkDestroyDevice(mDevice, nullptr);
 
