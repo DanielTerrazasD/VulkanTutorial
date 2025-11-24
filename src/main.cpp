@@ -246,6 +246,12 @@ private:
     void CreateImageViews();
 
     /**
+     * @brief 
+     * 
+     */
+    void CreateGraphicsPipeline();
+
+    /**
      * @brief Find and initialize a Vulkan Physical Device object.
      * 
      */
@@ -326,6 +332,7 @@ void HelloTriangleApp::InitVulkan()
     CreateLogicalDevice();
     CreateSwapChain();
     CreateImageViews();
+    CreateGraphicsPipeline();
 }
 
 void HelloTriangleApp::CreateInstance()
@@ -719,6 +726,11 @@ void HelloTriangleApp::CreateImageViews()
             throw std::runtime_error("Failed to create image views!");
         }
     }
+}
+
+void HelloTriangleApp::CreateGraphicsPipeline()
+{
+
 }
 
 void HelloTriangleApp::PickPhysicalDevice()
