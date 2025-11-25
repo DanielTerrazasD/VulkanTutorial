@@ -10,3 +10,6 @@ build/
 # Ignoring common IDE folders
 .vs/
 .vscode/
+
+# Ignore common file extentions
+*.spv

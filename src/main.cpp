@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <limits>
 #include <algorithm>
+#include <fstream>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -252,6 +253,14 @@ private:
     void CreateGraphicsPipeline();
 
     /**
+     * @brief Create and initialize a VkShaderModule object from a bytecode buffer.
+     * 
+     * @param code Bytecode buffer.
+     * @return VkShaderModule 
+     */
+    VkShaderModule CreateShaderModule(const std::vector<char>& code);
+
+    /**
      * @brief Find and initialize a Vulkan Physical Device object.
      * 
      */
@@ -296,6 +305,14 @@ private:
                                                         VkDebugUtilsMessageTypeFlagsEXT messageType,
                                                         const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
                                                         void* pUserData);
+
+    /**
+     * @brief Utility function to read a SPIR-V bytecode file.
+     * 
+     * @param filename Path to file name.
+     * @return std::vector<char> Bytecode.
+     */
+    std::vector<char> ReadFile(const std::string& filename);
 
     /**
      * @brief Application running loop.
@@ -730,7 +747,66 @@ void HelloTriangleApp::CreateImageViews()
 
 void HelloTriangleApp::CreateGraphicsPipeline()
 {
+    auto vertShaderCode = ReadFile("shaders/vert.spv");
+    auto fragShaderCode = ReadFile("shaders/frag.spv");
 
+    VkShaderModule vertShaderModule = CreateShaderModule(vertShaderCode);
+    VkShaderModule fragShaderModule = CreateShaderModule(fragShaderCode);
+
+    // To actually use the shaders , those need to be assigned to a specific pipeline stage through
+    // VkPipelineShaderStageCreateInfo structures as part of the actual pipeline creation process.
+    
+    // VkPipelineShaderStageCreateInfo struct:
+    // Information required by the driver to create a pipeline (shader) stage.
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertShaderModule;
+    vertShaderStageInfo.pName = "main"; // Entry Point
+
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = fragShaderModule;
+    fragShaderStageInfo.pName = "main";
+
+    // There is another (optional) member, pSpecializationInfo, which is not used here, but is worth
+    // discussing. It allows you to specify values for shader constants. You can use a single shader
+    // module where its behavior can be configured at pipeline creation by specifying different values
+    // for the constants used in it. 
+    // This is more efficient than configuring the shader using variables at render time, because the
+    // compiler can do optimizations like eliminating if statements that depend on these values.
+    // If you don’t have any constants like that, then you can set the member to nullptr, which our
+    // struct initialization does automatically.
+
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+    vkDestroyShaderModule(mDevice, fragShaderModule, nullptr);
+    vkDestroyShaderModule(mDevice, vertShaderModule, nullptr);
+}
+
+VkShaderModule HelloTriangleApp::CreateShaderModule(const std::vector<char>& code)
+{
+    // VkShaderModuleCreateInfo struct:
+    // Information required by the driver to create a shader module.
+    VkShaderModuleCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    createInfo.codeSize = code.size();
+    // The bytecode pointer is a uint32_t pointer rather than a char pointer.
+    // Therefore we will need to cast the pointer with reinterpret_cast as shown below.
+    // When you perform a cast like this, you also need to ensure that the data satisfies the alignment
+    // requirements of uint32_t.
+    // Lucky, the data is stored in an std::vector where the default allocator already ensures
+    // that the data satisfies the worst case alignment requirements.
+    createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+    VkShaderModule shaderModule;
+    if (vkCreateShaderModule(mDevice, &createInfo, nullptr, &shaderModule) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create shader module!");
+    }
+
+    return shaderModule;
 }
 
 void HelloTriangleApp::PickPhysicalDevice()
@@ -889,6 +965,23 @@ VKAPI_ATTR VkBool32 VKAPI_CALL HelloTriangleApp::DebugCallback( VkDebugUtilsMess
     // VK_ERROR_VALIDATION_FAILED_EXT error. This is normally only used to test the validation layers
     // themselves, so you should always return VK_FALSE.
     return VK_FALSE;
+}
+
+std::vector<char> HelloTriangleApp::ReadFile(const std::string& filename)
+{
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+    if (!file.is_open())
+    {
+        throw std::runtime_error("Failed to open file!");
+    }
+
+    size_t fileSize = (size_t) file.tellg();
+    std::vector<char> buffer(fileSize);
+    file.seekg(0);
+    file.read(buffer.data(), fileSize);
+    file.close();
+
+    return buffer;
 }
 
 void HelloTriangleApp::MainLoop()

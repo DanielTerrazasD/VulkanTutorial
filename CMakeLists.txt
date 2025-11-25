@@ -55,11 +55,11 @@ target_link_libraries(${TARGET}
 )
 
 # Creat post build command for VS
-# add_custom_command(TARGET ${TARGET} POST_BUILD
-#     COMMAND xcopy /E /I /Y 
-#     "\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\""  # Source directory
-#     "\"$<TARGET_FILE_DIR:${TARGET}>/shaders\"" # Destination directory
-# )
+add_custom_command(TARGET ${TARGET} POST_BUILD
+    COMMAND xcopy /E /I /Y 
+    "\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\""  # Source directory
+    "\"$<TARGET_FILE_DIR:${TARGET}>/shaders\"" # Destination directory
+)
 
 # Group together all glfw_targets to the "external" folder
 get_property(glfw_targets DIRECTORY external/glfw/src PROPERTY BUILDSYSTEM_TARGETS)
