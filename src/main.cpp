@@ -139,6 +139,8 @@ private:
     VkRenderPass mRenderPass;
     VkPipelineLayout mPipelineLayout;
 
+    VkPipeline mGraphicsPipeline;
+
     /**
      * @brief GLFW Window Initialization.
      * 
@@ -256,7 +258,7 @@ private:
     void CreateRenderPass();
 
     /**
-     * @brief 
+     * @brief Create and initialize a VkPipeline object.
      * 
      */
     void CreateGraphicsPipeline();
@@ -1028,7 +1030,42 @@ void HelloTriangleApp::CreateGraphicsPipeline()
     // Issue the Vulkan create pipeline layout call and check for errors:
     if (vkCreatePipelineLayout(mDevice, &pipelineLayoutInfo, nullptr, &mPipelineLayout) != VK_SUCCESS)
     {
-        throw std::runtime_error("failed to create pipeline layout!");
+        throw std::runtime_error("Failed to create pipeline layout!");
+    }
+
+    // VkGraphicsPipelineCreateInfo struct:
+    // Contains:
+    // 1. Shader Stages.
+    // 2. Fixed-Function State.
+    // 3. Pipeline Layout.
+    // 4. Render Pass.
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    // Start by referencing the array VkPipelineShaderStageCreateInfo
+    pipelineInfo.pStages = shaderStages;
+    // Then reference all of the structures describing the fixed-function stage.
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    // Then comes the pipeline layout, which is a Vulkan handle rather than a struct pointer.
+    pipelineInfo.layout = mPipelineLayout;
+    // Finally the render pass and the index of the sub pass where this graphics pipeline will be used.
+    pipelineInfo.renderPass = mRenderPass;
+    pipelineInfo.subpass = 0;
+    // Actually two more parameters basePipelineHandle and basePipelineIndex.
+    // Vulkan allows you to create a new graphics pipeline by deriving from an existing pipeline.
+    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
+    pipelineInfo.basePipelineIndex = -1; // Optional
+
+    // Issue the Vulkan create graphics pipelines call and check for errors:
+    if (vkCreateGraphicsPipelines(mDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &mGraphicsPipeline) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create graphics pipeline!");
     }
 
     vkDestroyShaderModule(mDevice, fragShaderModule, nullptr);
@@ -1244,6 +1281,7 @@ void HelloTriangleApp::MainLoop()
 
 void HelloTriangleApp::Cleanup()
 {
+    vkDestroyPipeline(mDevice, mGraphicsPipeline, nullptr);
     vkDestroyPipelineLayout(mDevice, mPipelineLayout, nullptr);
     vkDestroyRenderPass(mDevice, mRenderPass, nullptr);
 
