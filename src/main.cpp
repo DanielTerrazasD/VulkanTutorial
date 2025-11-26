@@ -141,6 +141,8 @@ private:
 
     VkPipeline mGraphicsPipeline;
 
+    std::vector<VkFramebuffer> mSwapChainFramebuffers;
+
     /**
      * @brief GLFW Window Initialization.
      * 
@@ -245,7 +247,7 @@ private:
     void CreateSwapChain();
 
     /**
-     * @brief Create and initialize some VkImageView objects (according to the number of VkImages in the
+     * @brief Create and initialize a list of VkImageView objects (according to the number of VkImages in the
      * swap chain).
      * 
      */
@@ -262,6 +264,13 @@ private:
      * 
      */
     void CreateGraphicsPipeline();
+
+    /**
+     * @brief Create and initialize a list of VkFramebuffer objects (according to the number of VkImageView in the
+     * swap chain).
+     * 
+     */
+    void CreateFramebuffers();
 
     /**
      * @brief Create and initialize a VkShaderModule object from a bytecode buffer.
@@ -362,6 +371,7 @@ void HelloTriangleApp::InitVulkan()
     CreateImageViews();
     CreateRenderPass();
     CreateGraphicsPipeline();
+    CreateFramebuffers();
 }
 
 void HelloTriangleApp::CreateInstance()
@@ -1072,6 +1082,36 @@ void HelloTriangleApp::CreateGraphicsPipeline()
     vkDestroyShaderModule(mDevice, vertShaderModule, nullptr);
 }
 
+void HelloTriangleApp::CreateFramebuffers()
+{
+    // Allocate Framebuffer objects equal to the number of VkImageViews from the swap chain.
+    mSwapChainFramebuffers.resize(mSwapChainImageViews.size());
+
+    // Iterate through the image views and create framebuffers from them:
+    for (size_t i = 0; i < mSwapChainImageViews.size(); i++)
+    {
+        VkImageView attachments[] = { mSwapChainImageViews[i] };
+
+        VkFramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        // Specify with which mRenderPass the framebuffer needs to be compatible.
+        // Basically means that they use the same number and type of attachments.
+        framebufferInfo.renderPass = mRenderPass;
+        // The attachmentCount and pAttachments parameters specify the VkImageView objects that should be bound
+        // to the respective attachment descriptions in the render pass pAttachment array.
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.width = mSwapChainExtent.width;
+        framebufferInfo.height = mSwapChainExtent.height;
+        framebufferInfo.layers = 1;
+
+        if (vkCreateFramebuffer(mDevice, &framebufferInfo, nullptr, &mSwapChainFramebuffers[i]) != VK_SUCCESS)
+        {
+            throw std::runtime_error("failed to create framebuffer!");
+        }
+    }
+}
+
 VkShaderModule HelloTriangleApp::CreateShaderModule(const std::vector<char>& code)
 {
     // VkShaderModuleCreateInfo struct:
@@ -1281,6 +1321,12 @@ void HelloTriangleApp::MainLoop()
 
 void HelloTriangleApp::Cleanup()
 {
+    // Delete the framebuffers before the image views and render pass that they are based on.
+    for (auto framebuffer : mSwapChainFramebuffers)
+    {
+        vkDestroyFramebuffer(mDevice, framebuffer, nullptr);
+    }
+
     vkDestroyPipeline(mDevice, mGraphicsPipeline, nullptr);
     vkDestroyPipelineLayout(mDevice, mPipelineLayout, nullptr);
     vkDestroyRenderPass(mDevice, mRenderPass, nullptr);
