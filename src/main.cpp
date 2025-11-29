@@ -15,6 +15,7 @@
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
+const int MAX_FRAMES_IN_FLIGHT = 2;
 
 #ifdef NDEBUG
 const bool kEnableValidationLayers = false;
@@ -139,14 +140,15 @@ private:
     VkPipeline mGraphicsPipeline;
 
     VkCommandPool mCommandPool;
-    VkCommandBuffer mCommandBuffer;
+    std::vector<VkCommandBuffer> mCommandBuffers;
 
-    // Semaphore to signal that an image has been acquired from the swapchain and is ready for rendering.
-    VkSemaphore mImageAvailableSemaphore;
-    // Semaphore to signal that rendering has finished and presentation can happen.
-    VkSemaphore mRenderFinishedSemaphore;
-    // Fence to ensure that only one frame is rendering at a time.
-    VkFence mInFlightFence;
+    // Semaphores to signal that an image has been acquired from the swapchain and is ready for rendering.
+    std::vector<VkSemaphore> mImageAvailableSemaphores;
+    // Semaphores to signal that rendering has finished and presentation can happen.
+    std::vector<VkSemaphore> mRenderFinishedSemaphores;
+    // Fences to ensure that only one frame is rendering at a time.
+    std::vector<VkFence> mInFlightFences;
+    uint32_t mCurrentFrame = 0;
 
     /**
      * @brief GLFW Window Initialization.
@@ -284,10 +286,10 @@ private:
     void CreateCommandPool();
 
     /**
-     * @brief Create a VkCommandBuffer object.
+     * @brief Create VkCommandBuffer objects according to the number of frames in flight.
      * 
      */
-    void CreateCommandBuffer();
+    void CreateCommandBuffers();
 
     /**
      * @brief Function that writes the commands into a command buffer.
@@ -410,7 +412,7 @@ void HelloTriangleApp::InitVulkan()
     CreateGraphicsPipeline();
     CreateFramebuffers();
     CreateCommandPool();
-    CreateCommandBuffer();
+    CreateCommandBuffers();
     CreateSyncObjects();
 }
 
@@ -1195,8 +1197,10 @@ void HelloTriangleApp::CreateCommandPool()
     }
 }
 
-void HelloTriangleApp::CreateCommandBuffer()
+void HelloTriangleApp::CreateCommandBuffers()
 {
+    mCommandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+
     // VkCommandBufferAllocateInfo struct:
     // Specifies the command pool and number of buffers to allocate.
     VkCommandBufferAllocateInfo allocInfo{};
@@ -1208,10 +1212,10 @@ void HelloTriangleApp::CreateCommandBuffer()
     // 2. VK_COMMAND_BUFFER_LEVEL_SECONDARY: Cannot be submitted directly, but can be called from primary
     // command buffers.
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
+    allocInfo.commandBufferCount = static_cast<uint32_t>(mCommandBuffers.size());
 
     // Issue the Vulkan allocate command buffers call and check for errors:
-    if (vkAllocateCommandBuffers(mDevice, &allocInfo, &mCommandBuffer) != VK_SUCCESS)
+    if (vkAllocateCommandBuffers(mDevice, &allocInfo, mCommandBuffers.data()) != VK_SUCCESS)
     {
         throw std::runtime_error("Failed to allocate command buffers!");
     }
@@ -1305,6 +1309,10 @@ void HelloTriangleApp::RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32
 
 void HelloTriangleApp::CreateSyncObjects()
 {
+    mImageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    mRenderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    mInFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+
     // Creating semaphores requires filling in the VkSemaphoreCreateInfo, but in the current version
     // of the API it doesn't actually have any required fields besides sType:
     VkSemaphoreCreateInfo semaphoreInfo{};
@@ -1315,11 +1323,14 @@ void HelloTriangleApp::CreateSyncObjects()
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Start the fence in a signaled state.
 
-    if (vkCreateSemaphore(mDevice, &semaphoreInfo, nullptr, &mImageAvailableSemaphore) != VK_SUCCESS ||
-        vkCreateSemaphore(mDevice, &semaphoreInfo, nullptr, &mRenderFinishedSemaphore) != VK_SUCCESS ||
-        vkCreateFence(mDevice, &fenceInfo, nullptr, &mInFlightFence) != VK_SUCCESS)
+    for (size_t i = 0; i <MAX_FRAMES_IN_FLIGHT; i++)
     {
-        throw std::runtime_error("Failed to create synchronization objects for a frame!");
+        if (vkCreateSemaphore(mDevice, &semaphoreInfo, nullptr, &mImageAvailableSemaphores[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(mDevice, &semaphoreInfo, nullptr, &mRenderFinishedSemaphores[i]) != VK_SUCCESS ||
+            vkCreateFence(mDevice, &fenceInfo, nullptr, &mInFlightFences[i]) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create synchronization objects for a frame!");
+        }
     }
 }
 
@@ -1361,35 +1372,35 @@ void HelloTriangleApp::DrawFrame()
     // *** Waiting for the previous frame ***
     // At the start of the frame, we wait until the previous frame has finished, so that the command
     // buffer and semaphores are available to use.
-    vkWaitForFences(mDevice,            // Logical device.
-                    1,                  // Number of fences in the array.
-                    &mInFlightFence,    // Array of fences.
-                    VK_TRUE,            // VK_TRUE means wait for all the fences.
-                    UINT64_MAX);        // UINT64_MAX effectively disables the timeout.
+    vkWaitForFences(mDevice,                            // Logical device.
+                    1,                                  // Number of fences in the array.
+                    &mInFlightFences[mCurrentFrame],    // Array of fences.
+                    VK_TRUE,                            // VK_TRUE means wait for all the fences.
+                    UINT64_MAX);                        // UINT64_MAX effectively disables the timeout.
     // After waiting, we need to manually reset the fence to the unsignaled state with the vkResetFences call:
-    vkResetFences(mDevice, 1, &mInFlightFence);
+    vkResetFences(mDevice, 1, &mInFlightFences[mCurrentFrame]);
 
     // *** Acquiring an image from the swap chain ***
     // The next thing we need to do is acquire an image from the swap chain.
     uint32_t imageIndex;
-    vkAcquireNextImageKHR(  mDevice,                    // Logical device.
-                            mSwapChain,                 // Swapchain.
-                            UINT64_MAX,                 // Timeout in nanoseconds, (UINT64_MAX = disable the timeout).
-                            mImageAvailableSemaphore,   // Semaphore to be signaled when the presentation engine is finished using the image.
-                            VK_NULL_HANDLE,             // Fence to be signaled when the presentation engine is finished using the image.
-                            &imageIndex);               // Index of the available VkImage in mSwapChainImages.
+    vkAcquireNextImageKHR(  mDevice,                                    // Logical device.
+                            mSwapChain,                                 // Swapchain.
+                            UINT64_MAX,                                 // Timeout in nanoseconds, (UINT64_MAX = disable the timeout).
+                            mImageAvailableSemaphores[mCurrentFrame],   // Semaphore to be signaled when the presentation engine is finished using the image.
+                            VK_NULL_HANDLE,                             // Fence to be signaled when the presentation engine is finished using the image.
+                            &imageIndex);                               // Index of the available VkImage in mSwapChainImages.
 
     // *** Recording the command buffer ***
     // Use imageIndex to record the command buffer.
     // Call vkResetCommandBuffer to make sure it is able to be recorded.
-    vkResetCommandBuffer(mCommandBuffer, 0);
+    vkResetCommandBuffer(mCommandBuffers[mCurrentFrame], 0);
     // Now record the commands.
-    RecordCommandBuffer(mCommandBuffer, imageIndex);
+    RecordCommandBuffer(mCommandBuffers[mCurrentFrame], imageIndex);
     /// *** Submitting the command buffer ***
     // Queue submission and synchronization is configured through the VkSubmitInfo structure.
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    VkSemaphore waitSemaphores[] = {mImageAvailableSemaphore};
+    VkSemaphore waitSemaphores[] = {mImageAvailableSemaphores[mCurrentFrame]};
     // Wait with writing colors to the image until it's available
     // Each entry in the waitStages array corresponds to the semaphore with the same index in pWaitSemaphores.
     VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -1398,16 +1409,16 @@ void HelloTriangleApp::DrawFrame()
     submitInfo.pWaitDstStageMask = waitStages;
     // The next two parameters specify which command buffers submit for execution.
     submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &mCommandBuffer;
+    submitInfo.pCommandBuffers = &mCommandBuffers[mCurrentFrame];
     // The signalSemaphoreCount and pSignalSemaphores parameters specify which semaphores to signal
     // once the command buffer(s) have finished execution.
-    VkSemaphore signalSemaphores[] = {mRenderFinishedSemaphore};
+    VkSemaphore signalSemaphores[] = {mRenderFinishedSemaphores[mCurrentFrame]};
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
     // Now submit the command buffer to the graphics queue using vkQueueSubmit
     // The last parameter references an optional fence that will be signaled when the command buffers
     // finish execution.
-    if (vkQueueSubmit(mGraphicsQueue, 1, &submitInfo, mInFlightFence) != VK_SUCCESS)
+    if (vkQueueSubmit(mGraphicsQueue, 1, &submitInfo, mInFlightFences[mCurrentFrame]) != VK_SUCCESS)
     {
         throw std::runtime_error("Failed to submit draw command buffer!");
     }
@@ -1436,6 +1447,9 @@ void HelloTriangleApp::DrawFrame()
     presentInfo.pSwapchains = swapChains;
     presentInfo.pImageIndices = &imageIndex;
     vkQueuePresentKHR(mPresentQueue, &presentInfo);
+
+    // Wrap-around counter
+    mCurrentFrame = (mCurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 VkShaderModule HelloTriangleApp::CreateShaderModule(const std::vector<char>& code)
@@ -1644,13 +1658,18 @@ void HelloTriangleApp::MainLoop()
         glfwPollEvents();
         DrawFrame();
     }
+
+    vkDeviceWaitIdle(mDevice);
 }
 
 void HelloTriangleApp::Cleanup()
 {
-    vkDestroySemaphore(mDevice, mRenderFinishedSemaphore, nullptr);
-    vkDestroySemaphore(mDevice, mImageAvailableSemaphore, nullptr);
-    vkDestroyFence(mDevice, mInFlightFence, nullptr);
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        vkDestroySemaphore(mDevice, mRenderFinishedSemaphores[i], nullptr);
+        vkDestroySemaphore(mDevice, mImageAvailableSemaphores[i], nullptr);
+        vkDestroyFence(mDevice, mInFlightFences[i], nullptr);
+    }
 
     vkDestroyCommandPool(mDevice, mCommandPool, nullptr);
 
