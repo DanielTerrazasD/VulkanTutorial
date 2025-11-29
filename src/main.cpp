@@ -149,12 +149,22 @@ private:
     // Fences to ensure that only one frame is rendering at a time.
     std::vector<VkFence> mInFlightFences;
     uint32_t mCurrentFrame = 0;
+    bool mFramebufferResized = false;
 
     /**
      * @brief GLFW Window Initialization.
      * 
      */
     void InitWindow();
+
+    /**
+     * @brief GLFW Callback function that detects framebuffer resizes.
+     * 
+     * @param window GLFW Window handle.
+     * @param width New Framebuffer's width.
+     * @param height New Framebuffer's height.
+     */
+    static void FramebufferResizeCallback(GLFWwindow* window, int width, int height);
 
     /**
      * @brief Vulkan Initialization.
@@ -252,6 +262,18 @@ private:
      * 
      */
     void CreateSwapChain();
+
+    /**
+     * @brief Recreate the SwapChain when the window surface changes.
+     * 
+     */
+    void RecreateSwapChain();
+
+    /**
+     * @brief Cleanup the Vulkan objects related to the swapchain.
+     * 
+     */
+    void CleanupSwapChain();
 
     /**
      * @brief Create and initialize a list of VkImageView objects (according to the number of VkImages in the
@@ -393,10 +415,16 @@ void HelloTriangleApp::InitWindow()
     // Since GLFW was designed to create an OpenGL context, we need to specify to
     // not create an OpenGL context (GLFW_NO_API) with the following call:
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    // Disabling resizing for now.
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
     mWindow = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+    glfwSetWindowUserPointer(mWindow, this);
+    glfwSetFramebufferSizeCallback(mWindow, FramebufferResizeCallback);
+}
+
+void HelloTriangleApp::FramebufferResizeCallback(GLFWwindow* window, int width, int height)
+{
+    auto app = reinterpret_cast<HelloTriangleApp*>(glfwGetWindowUserPointer(window));
+    app->mFramebufferResized = true;
 }
 
 void HelloTriangleApp::InitVulkan()
@@ -771,6 +799,40 @@ void HelloTriangleApp::CreateSwapChain()
     // Store the format and extent of the swap chain images for later use.
     mSwapChainImageFormat = surfaceFormat.format;
     mSwapChainExtent = extent;
+}
+
+void HelloTriangleApp::RecreateSwapChain()
+{
+    // If the framebuffer's width and height is 0 (due to minimization) then sleep until an event occurs.
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(mWindow, &width, &height);
+    while (width == 0 || height == 0)
+    {
+        glfwGetFramebufferSize(mWindow, &width, &height);
+        glfwWaitEvents();
+    }
+
+    vkDeviceWaitIdle(mDevice);
+
+    CleanupSwapChain();
+    CreateSwapChain();
+    CreateImageViews();
+    CreateFramebuffers();
+}
+
+void HelloTriangleApp::CleanupSwapChain()
+{
+    for (auto framebuffer : mSwapChainFramebuffers)
+    {
+        vkDestroyFramebuffer(mDevice, framebuffer, nullptr);
+    }
+
+    for (auto imageView : mSwapChainImageViews)
+    {
+        vkDestroyImageView(mDevice, imageView, nullptr);
+    }
+
+    vkDestroySwapchainKHR(mDevice, mSwapChain, nullptr);
 }
 
 void HelloTriangleApp::CreateImageViews()
@@ -1377,18 +1439,31 @@ void HelloTriangleApp::DrawFrame()
                     &mInFlightFences[mCurrentFrame],    // Array of fences.
                     VK_TRUE,                            // VK_TRUE means wait for all the fences.
                     UINT64_MAX);                        // UINT64_MAX effectively disables the timeout.
-    // After waiting, we need to manually reset the fence to the unsignaled state with the vkResetFences call:
-    vkResetFences(mDevice, 1, &mInFlightFences[mCurrentFrame]);
 
     // *** Acquiring an image from the swap chain ***
     // The next thing we need to do is acquire an image from the swap chain.
     uint32_t imageIndex;
-    vkAcquireNextImageKHR(  mDevice,                                    // Logical device.
-                            mSwapChain,                                 // Swapchain.
-                            UINT64_MAX,                                 // Timeout in nanoseconds, (UINT64_MAX = disable the timeout).
-                            mImageAvailableSemaphores[mCurrentFrame],   // Semaphore to be signaled when the presentation engine is finished using the image.
-                            VK_NULL_HANDLE,                             // Fence to be signaled when the presentation engine is finished using the image.
-                            &imageIndex);                               // Index of the available VkImage in mSwapChainImages.
+    VkResult result = vkAcquireNextImageKHR(mDevice,                                    // Logical device.
+                                            mSwapChain,                                 // Swapchain.
+                                            UINT64_MAX,                                 // Timeout in nanoseconds, (UINT64_MAX = disable the timeout).
+                                            mImageAvailableSemaphores[mCurrentFrame],   // Semaphore to be signaled when the presentation engine is finished using the image.
+                                            VK_NULL_HANDLE,                             // Fence to be signaled when the presentation engine is finished using the image.
+                                            &imageIndex);                               // Index of the available VkImage in mSwapChainImages.
+
+    // Recreate the Swap Chain if it is no longer adequate for presentation.
+    if (result == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        RecreateSwapChain();
+        return;
+    }
+    else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    {
+        throw std::runtime_error("Failed to acquire swap chain image!");
+    }
+
+    // (Only reset the fence if we are submitting work)
+    // After waiting, we need to manually reset the fence to the unsignaled state with the vkResetFences call:
+    vkResetFences(mDevice, 1, &mInFlightFences[mCurrentFrame]);
 
     // *** Recording the command buffer ***
     // Use imageIndex to record the command buffer.
@@ -1446,7 +1521,17 @@ void HelloTriangleApp::DrawFrame()
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = swapChains;
     presentInfo.pImageIndices = &imageIndex;
-    vkQueuePresentKHR(mPresentQueue, &presentInfo);
+    result = vkQueuePresentKHR(mPresentQueue, &presentInfo);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || mFramebufferResized)
+    {
+        mFramebufferResized = false;
+        RecreateSwapChain();
+    }
+    else if (result != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to present swap chain image!");
+    }
 
     // Wrap-around counter
     mCurrentFrame = (mCurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
@@ -1625,7 +1710,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL HelloTriangleApp::DebugCallback( VkDebugUtilsMess
                                                                 const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
                                                                 void* pUserData)
 {
-    std::cerr << "Validation Layer: " << pCallbackData->pMessage << std::endl;
+    std::cerr << "Validation Layer: " << pCallbackData->pMessage << "\n" << std::endl;
 
     // The callback returns a boolean that indicates if the Vulkan call that triggered the validation
     // layer message should be aborted.If the callback returns true, then the call is aborted with the
@@ -1664,6 +1749,12 @@ void HelloTriangleApp::MainLoop()
 
 void HelloTriangleApp::Cleanup()
 {
+    CleanupSwapChain();
+
+    vkDestroyPipeline(mDevice, mGraphicsPipeline, nullptr);
+    vkDestroyPipelineLayout(mDevice, mPipelineLayout, nullptr);
+    vkDestroyRenderPass(mDevice, mRenderPass, nullptr);
+
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         vkDestroySemaphore(mDevice, mRenderFinishedSemaphores[i], nullptr);
@@ -1672,23 +1763,6 @@ void HelloTriangleApp::Cleanup()
     }
 
     vkDestroyCommandPool(mDevice, mCommandPool, nullptr);
-
-    // Delete the framebuffers before the image views and render pass that they are based on.
-    for (auto framebuffer : mSwapChainFramebuffers)
-    {
-        vkDestroyFramebuffer(mDevice, framebuffer, nullptr);
-    }
-
-    vkDestroyPipeline(mDevice, mGraphicsPipeline, nullptr);
-    vkDestroyPipelineLayout(mDevice, mPipelineLayout, nullptr);
-    vkDestroyRenderPass(mDevice, mRenderPass, nullptr);
-
-    for (auto imageView : mSwapChainImageViews)
-    {
-        vkDestroyImageView(mDevice, imageView, nullptr);
-    }
-
-    vkDestroySwapchainKHR(mDevice, mSwapChain, nullptr);
     vkDestroyDevice(mDevice, nullptr);
 
     if (kEnableValidationLayers)
