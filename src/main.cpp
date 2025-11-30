@@ -12,6 +12,7 @@
 #include <limits>
 #include <algorithm>
 #include <fstream>
+#include <array>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -75,6 +76,69 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
         func(instance, debugMessenger, pAllocator);
     }
 }
+
+struct Vertex
+{
+    glm::vec2 mPosition;
+    glm::vec3 mColor;
+
+    // A vertex binding describes at which rate to load data from memory throughout the vertices.
+    // It specifies the number of bytes between data entries and whether to move to the next data
+    // entry after each vertex or after each instance.
+    static VkVertexInputBindingDescription GetBindingDescription()
+    {
+        VkVertexInputBindingDescription bindingDescription{};
+        // The binding parameter specifies the index of the binding in the array of bindings.
+        bindingDescription.binding = 0;
+        // The stride parameter specifies the number of bytes from one entry to the next
+        bindingDescription.stride = sizeof(Vertex);
+        // The inputRate parameter can have one of the following values:
+        // 1. VK_VERTEX_INPUT_RATE_VERTEX: Move to the next data entry after each vertex
+        // 2. VK_VERTEX_INPUT_RATE_INSTANCE: Move to the next data entry after each instance
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        return bindingDescription;
+    }
+
+    // An attribute description struct describes how to extract a vertex attribute from a chunk of
+    // vertex data originating from a binding description.
+    static std::array<VkVertexInputAttributeDescription, 2> GetAttributeDescriptions()
+    {
+        // We have two attributes, position and color, so we need two attribute description structs.
+        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+
+        // The binding parameter tells Vulkan from which binding the per-vertex data comes.
+        attributeDescriptions[0].binding = 0;
+        // The location parameter references the location directive of the input in the vertex shader.
+        attributeDescriptions[0].location = 0;
+        // The format parameter describes the type of data for the attribute (as color formats) and
+        // implicitly defines the byte size of attribute data.
+        // - float: VK_FORMAT_R32_SFLOAT
+        // - vec2: VK_FORMAT_R32G32_SFLOAT
+        // - vec3: VK_FORMAT_R32G32B32_SFLOAT
+        // - vec4: VK_FORMAT_R32G32B32A32_SFLOAT
+        // - ivec2: VK_FORMAT_R32G32_SINT
+        // - uvec4: VK_FORMAT_R32G32B32A32_UINT
+        // - double: VK_FORMAT_R64_SFLOAT
+        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+        // The offset parameter specifies the number of bytes since the start of the per-vertex data to read from.
+        attributeDescriptions[0].offset = offsetof(Vertex, mPosition);
+
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(Vertex, mColor);
+
+        return attributeDescriptions;
+    }
+};
+
+const std::vector<Vertex> kVertices =
+{
+    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+};
 
 struct QueueFamilyIndices
 {
@@ -966,8 +1030,8 @@ void HelloTriangleApp::CreateRenderPass()
 
 void HelloTriangleApp::CreateGraphicsPipeline()
 {
-    auto vertShaderCode = ReadFile("shaders/vert.spv");
-    auto fragShaderCode = ReadFile("shaders/frag.spv");
+    auto vertShaderCode = ReadFile("shaders/shader.vert.spv");
+    auto fragShaderCode = ReadFile("shaders/shader.frag.spv");
 
     VkShaderModule vertShaderModule = CreateShaderModule(vertShaderCode);
     VkShaderModule fragShaderModule = CreateShaderModule(fragShaderCode);
@@ -1017,10 +1081,15 @@ void HelloTriangleApp::CreateGraphicsPipeline()
     // (Hardcoding these for now.)
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 0;
-    vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
-    vertexInputInfo.vertexAttributeDescriptionCount = 0;
-    vertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
+
+    auto bindingDescription = Vertex::GetBindingDescription();
+    auto attributeDescriptions = Vertex::GetAttributeDescriptions();
+
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
     // The pVertexBindingDescriptions and pVertexAttributeDescriptions members point to an array
     // of structs that describe the aforementioned details for loading vertex data.
 
