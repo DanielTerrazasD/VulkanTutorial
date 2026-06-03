@@ -381,6 +381,30 @@ private:
     void CreateVertexBuffer();
 
     /**
+     * @brief Create and initialize a VkBuffer object and its corresponding VkDeviceMemory object.
+     * 
+     * @param[in] size Size of the buffer.
+     * @param[in] usage Usage flags for the buffer.
+     * @param[in] properties Memory properties flags.
+     * @param[out] buffer Reference to the VkBuffer object to create.
+     * @param[out] bufferMemory Reference to the VkDeviceMemory object to allocate.
+     * 
+     * @note The caller is responsible for destroying the buffer with
+     *       vkDestroyBuffer() and freeing the memory with vkFreeMemory().
+     */
+    void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
+
+    /**
+     * @brief Copy data from one buffer to another.
+     * 
+     * @param[in] srcBuffer Source buffer.
+     * @param[in] dstBuffer Destination buffer.
+     * @param[in] size Size of the data to copy.
+     * 
+     */
+    void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+
+    /**
      * @brief Find the index of a memory type with the specified properties.
      * 
      * @param typeFilter Memory type flags.
@@ -1343,32 +1367,72 @@ void HelloTriangleApp::CreateCommandPool()
     // Issue the Vulkan create command pool call and check for errors:
     if (vkCreateCommandPool(mDevice, &poolInfo, nullptr, &mCommandPool) != VK_SUCCESS)
     {
-        throw std::runtime_error("Failed to create command pool!");
+        throw std::runtime_error("Failed to create graphics command pool!");
     }
 }
 
 void HelloTriangleApp::CreateVertexBuffer()
+{
+    VkDeviceSize bufferSize = sizeof(kVertices[0]) * kVertices.size();
+
+    // Create a staging buffer, which is a temporary buffer that is used to transfer the vertex data to the GPU memory.
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    CreateBuffer(bufferSize, usage, properties, stagingBuffer, stagingBufferMemory);
+
+    // Now copy the vertex data to the buffer.
+    void* data;
+    vkMapMemory(mDevice, stagingBufferMemory, 0, bufferSize, 0, &data);
+        // Now simply memcpy the vertex data to the mapped memory.
+        memcpy(data, kVertices.data(), (size_t) bufferSize);
+    vkUnmapMemory(mDevice, stagingBufferMemory);
+
+    // The driver may not immediately copy the data into the buffer memory, for example because of caching.
+    // It is also possible that writes to the buffer are not visible in the mapped memory yet.
+    // There are two ways to deal with that problem:
+    // - Use a memory heap that is host coherent, indicated with VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    // - Call vkFlushMappedMemoryRanges after writing to the mapped memory, and call vkInvalidateMappedMemoryRanges
+    // before reading from the mapped memory.
+
+    // Create the actual vertex buffer with device local memory, which is the most efficient for the GPU to access, but cannot be mapped and written to directly.
+    usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    CreateBuffer(bufferSize, usage, properties, mVertexBuffer, mVertexBufferMemory);
+
+    // Copy the data from the staging buffer to the vertex buffer.
+    CopyBuffer(stagingBuffer, mVertexBuffer, bufferSize);
+
+    // Destroy the staging buffer and free its memory after the transfer is done.
+    VkAllocationCallbacks* allocator = nullptr;
+    vkDestroyBuffer(mDevice, stagingBuffer, allocator);
+    vkFreeMemory(mDevice, stagingBufferMemory, allocator);
+}
+
+void HelloTriangleApp::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory)
 {
     // Buffers in Vulkan are regions of memory used for storing arbitrary data that can be read by the graphics card.
     // Unlike the Vulkan objects we’ve been dealing with so far, buffers do not automatically allocate memory for themselves.
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     // The parameter size specifies the size of the buffer in bytes.
-    bufferInfo.size = sizeof(kVertices[0]) * kVertices.size();
+    bufferInfo.size = size;
     // The parameter usage indicates for which purposes the data in the buffer is going to be used.
     // It is possible to specify multiple purposes using a bitwise or.
-    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.usage = usage;
     // Buffers can also be owned by a specific queue family or be shared between multiple at the same time.
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateBuffer(mDevice, &bufferInfo, nullptr, &mVertexBuffer) != VK_SUCCESS)
+    VkAllocationCallbacks* allocator = nullptr;
+    if (vkCreateBuffer(mDevice, &bufferInfo, allocator, &buffer) != VK_SUCCESS)
     {
-        throw std::runtime_error("Failed to create vertex buffer!");
+        throw std::runtime_error("Failed to create buffer!");
     }
 
     // The first step of allocating memory for the buffer is to query its memory requirements.
     VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(mDevice, mVertexBuffer, &memRequirements);
+    vkGetBufferMemoryRequirements(mDevice, buffer, &memRequirements);
 
     // Graphics cards can offer different types of memory to allocate from.
     // Each type of memory varies in terms of allowed operations and performance characteristics.
@@ -1377,34 +1441,62 @@ void HelloTriangleApp::CreateVertexBuffer()
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, 
-                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, properties);
 
-    if (vkAllocateMemory(mDevice, &allocInfo, nullptr, &mVertexBufferMemory) != VK_SUCCESS)
+    if (vkAllocateMemory(mDevice, &allocInfo, allocator, &bufferMemory) != VK_SUCCESS)
     {
-        throw std::runtime_error("Failed to allocate vertex buffer memory!");
+        throw std::runtime_error("Failed to allocate buffer memory!");
     }
 
     // Associate this memory with the buffer:
     // The fourth parameter is the offset within the region ofmemory.
     // Since this memory is allocated specifically for this the vertex buffer, the offset is simply 0.
     // If the offset is non-zero, then it is required to be divisible by memRequirements.alignment.
-    vkBindBufferMemory(mDevice, mVertexBuffer, mVertexBufferMemory, 0);
+    VkDeviceSize memoryOffset = 0;
+    vkBindBufferMemory(mDevice, buffer, bufferMemory, memoryOffset);
+}
 
-    // Now copy the vertex data to the buffer.
-    void* data;
-    vkMapMemory(mDevice, mVertexBufferMemory, 0, bufferInfo.size, 0, &data);
-        // Now simply memcpy the vertex data to the mapped memory.
-        memcpy(data, kVertices.data(), (size_t) bufferInfo.size);
-    vkUnmapMemory(mDevice, mVertexBufferMemory);
+void HelloTriangleApp::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+{
+    // To copy data from one buffer to another, we need to record a command buffer with the copy command and submit it to a queue.
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = mCommandPool;
+    allocInfo.commandBufferCount = 1;
 
-    // Unfortunately the driver may not immediately copy the data into the buffer memory, for example because of caching.
-    // It is also possible that writes to the buffer are not visible in the mapped memory yet.
-    // There are two ways to deal with that problem:
-    // - Use a memory heap that is host coherent, indicated with VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-    // - Call vkFlushMappedMemoryRanges after writing to the mapped memory, and call vkInvalidateMappedMemoryRanges
-    // before reading from the mapped memory.
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(mDevice, &allocInfo, &commandBuffer);
+
+    // Begin recording the command buffer:
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+        // The region of data to copy between the buffers is specified in a VkBufferCopy struct.
+        VkBufferCopy copyRegion{};
+        copyRegion.srcOffset = 0; // Optional
+        copyRegion.dstOffset = 0; // Optional
+        copyRegion.size = size;
+        vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+    vkEndCommandBuffer(commandBuffer);
+
+    // Submit the command buffer to the graphics queue and wait for it to finish:
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    // There are two ways to ensure that the copy operation has finished before we proceed to destroy the staging buffer and its memory:
+    // 1. Use a fence to check for completion of the copy operation (vkWaitForFences).
+    // 2. Wait for the queue to become idle with vkQueueWaitIdle, which is what we’re doing here (vkQueueWaitIdle).
+    vkQueueSubmit(mGraphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(mGraphicsQueue);
+
+    vkFreeCommandBuffers(mDevice, mCommandPool, 1, &commandBuffer);
 }
 
 uint32_t HelloTriangleApp::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
