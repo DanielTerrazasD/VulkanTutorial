@@ -135,9 +135,15 @@ struct Vertex
 
 const std::vector<Vertex> kVertices =
 {
-    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+};
+
+const std::vector<uint16_t> kIndices =
+{
+    0, 1, 2, 2, 3, 0
 };
 
 struct QueueFamilyIndices
@@ -208,6 +214,8 @@ private:
 
     VkBuffer mVertexBuffer;
     VkDeviceMemory mVertexBufferMemory;
+    VkBuffer mIndexBuffer;
+    VkDeviceMemory mIndexBufferMemory;
 
     // Semaphores to signal that an image has been acquired from the swapchain and is ready for rendering.
     std::vector<VkSemaphore> mImageAvailableSemaphores;
@@ -381,6 +389,12 @@ private:
     void CreateVertexBuffer();
 
     /**
+     * @brief Create and initialize a VkBuffer for index data.
+     * 
+     */
+    void CreateIndexBuffer();
+
+    /**
      * @brief Create and initialize a VkBuffer object and its corresponding VkDeviceMemory object.
      * 
      * @param[in] size Size of the buffer.
@@ -547,6 +561,7 @@ void HelloTriangleApp::InitVulkan()
     CreateFramebuffers();
     CreateCommandPool();
     CreateVertexBuffer();
+    CreateIndexBuffer();
     CreateCommandBuffers();
     CreateSyncObjects();
 }
@@ -1384,7 +1399,9 @@ void HelloTriangleApp::CreateVertexBuffer()
 
     // Now copy the vertex data to the buffer.
     void* data;
-    vkMapMemory(mDevice, stagingBufferMemory, 0, bufferSize, 0, &data);
+    VkDeviceSize offset = 0;
+    VkMemoryMapFlags flags = 0;
+    vkMapMemory(mDevice, stagingBufferMemory, offset, bufferSize, flags, &data);
         // Now simply memcpy the vertex data to the mapped memory.
         memcpy(data, kVertices.data(), (size_t) bufferSize);
     vkUnmapMemory(mDevice, stagingBufferMemory);
@@ -1405,6 +1422,34 @@ void HelloTriangleApp::CreateVertexBuffer()
     CopyBuffer(stagingBuffer, mVertexBuffer, bufferSize);
 
     // Destroy the staging buffer and free its memory after the transfer is done.
+    VkAllocationCallbacks* allocator = nullptr;
+    vkDestroyBuffer(mDevice, stagingBuffer, allocator);
+    vkFreeMemory(mDevice, stagingBufferMemory, allocator);
+}
+
+void HelloTriangleApp::CreateIndexBuffer()
+{
+    VkDeviceSize bufferSize = sizeof(kIndices[0]) * kIndices.size();
+
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    CreateBuffer(bufferSize, usage, properties, stagingBuffer, stagingBufferMemory);
+
+    void* data;
+    VkDeviceSize offset = 0;
+    VkMemoryMapFlags flags = 0;
+    vkMapMemory(mDevice, stagingBufferMemory, offset, bufferSize, flags, &data);
+        memcpy(data, kIndices.data(), (size_t) bufferSize);
+    vkUnmapMemory(mDevice, stagingBufferMemory);
+
+    usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    CreateBuffer(bufferSize, usage, properties, mIndexBuffer, mIndexBufferMemory);
+
+    CopyBuffer(stagingBuffer, mIndexBuffer, bufferSize);
+
     VkAllocationCallbacks* allocator = nullptr;
     vkDestroyBuffer(mDevice, stagingBuffer, allocator);
     vkFreeMemory(mDevice, stagingBufferMemory, allocator);
@@ -1619,12 +1664,20 @@ void HelloTriangleApp::RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32
         VkDeviceSize offsets[] = {0};
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
 
-        // Now issue the draw command for the triangle:
-        vkCmdDraw(commandBuffer,
-                    static_cast<uint32_t>(kVertices.size()),    // vertexCount: 3 vertices.
-                    1,                                          // instanceCount: Used for instanced rendering, use 1 if not using instance rendering.
-                    0,                                          // firstVertex: Used as an offset into the vertex buffer, defines the lowest value of gl_VertexIndex.
-                    0);                                         // firstInstance: Used as an offset for instanced rendering, defines the lowest value of gl_InstanceIndex.
+        // Bind the index buffer.
+        vkCmdBindIndexBuffer(commandBuffer, mIndexBuffer, 0, VK_INDEX_TYPE_UINT16);
+
+        // Now issue the draw command using indexed drawing,
+        // which means that the indices will be read from the index buffer and
+        // the vertex data will be read from the vertex buffer based on those indices.
+        // In the shader, gl_VertexIndex will be replaced with the index from the index buffer
+        // Can be seen as: vertex = VertexBuffer[IndexBuffer[i]]; where i goes from 0 to indexCount.
+        vkCmdDrawIndexed(commandBuffer,
+                          static_cast<uint32_t>(kIndices.size()), // indexCount: Number of indices to draw.
+                          1,                                      // instanceCount: Used for instanced rendering, use 1 if not using instance rendering.
+                          0,                                      // firstIndex: Offset into the index buffer, defines the lowest value of gl_VertexIndex.
+                          0,                                      // vertexOffset: Added to the vertex index from the index buffer, allows reusing vertices.
+                          0);                                     // firstInstance: Used as an offset for instanced rendering, defines the lowest value of gl_InstanceIndex.
 
     // The render pass can now end.
     vkCmdEndRenderPass(commandBuffer);
@@ -2024,6 +2077,9 @@ void HelloTriangleApp::Cleanup()
 
     vkDestroyBuffer(mDevice, mVertexBuffer, nullptr);
     vkFreeMemory(mDevice, mVertexBufferMemory, nullptr);
+
+    vkDestroyBuffer(mDevice, mIndexBuffer, nullptr);
+    vkFreeMemory(mDevice, mIndexBufferMemory, nullptr);
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
