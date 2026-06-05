@@ -139,9 +139,9 @@ struct Vertex
 
 struct UniformBufferObject
 {
-    glm::mat4 mModel;
-    glm::mat4 mView;
-    glm::mat4 mProjection;
+    alignas(16) glm::mat4 mModel;
+    alignas(16) glm::mat4 mView;
+    alignas(16) glm::mat4 mProjection;
 };
 
 const std::vector<Vertex> kVertices =
@@ -232,6 +232,9 @@ private:
     std::vector<VkBuffer> mUniformBuffers;
     std::vector<VkDeviceMemory> mUniformBuffersMemory;
     std::vector<void*> mUniformBuffersMapped;
+
+    VkDescriptorPool mDescriptorPool;
+    std::vector<VkDescriptorSet> mDescriptorSets;
 
     // Semaphores to signal that an image has been acquired from the swapchain and is ready for rendering.
     std::vector<VkSemaphore> mImageAvailableSemaphores;
@@ -417,6 +420,19 @@ private:
     void CreateUniformBuffers();
 
     /**
+     * @brief Create and initialize a VkDescriptorPool object.
+     * A descriptor pool contains the descriptors which are used to allocate descriptor sets from and also contains
+     * the backing memory for those descriptors.
+     */
+    void CreateDescriptorPool();
+
+    /**
+     * @brief Create and initialize a list of VkDescriptorSet objects.
+     * 
+     */
+    void CreateDescriptorSets();
+
+    /**
      * @brief Create and initialize a VkDescriptorSetLayout object.
      * A descriptor set layout describes the shader resources that can be accessed from a pipeline.
      */
@@ -599,6 +615,8 @@ void HelloTriangleApp::InitVulkan()
     CreateVertexBuffer();
     CreateIndexBuffer();
     CreateUniformBuffers();
+    CreateDescriptorPool();
+    CreateDescriptorSets();
     CreateCommandBuffers();
     CreateSyncObjects();
 }
@@ -1271,8 +1289,8 @@ void HelloTriangleApp::CreateGraphicsPipeline()
         rasterizer.lineWidth = 1.0f;
         // cullMode member determines the type of face culling to use.
         rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-        // frontFace member specifies the vertex order for faces to be considered front-facing
-        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        // frontFace member specifies the vertex order for faces to be considered front-facing or counter-clockwise.
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         // The rasterizer can alter the depth values by adding a constant value or biasing them based
         // on a fragment’s slope. This is sometimes used for shadow mapping.
         rasterizer.depthBiasEnable = VK_FALSE;
@@ -1353,8 +1371,8 @@ void HelloTriangleApp::CreateGraphicsPipeline()
     // These uniform values need to be specified during pipeline creation by creating a VkPipelineLayout object.
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 0;
-    pipelineLayoutInfo.pushConstantRangeCount = 0;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &mDescriptorSetLayout;
 
     // Issue the Vulkan create pipeline layout call and check for errors:
     if (vkCreatePipelineLayout(mDevice, &pipelineLayoutInfo, nullptr, &mPipelineLayout) != VK_SUCCESS)
@@ -1542,6 +1560,71 @@ void HelloTriangleApp::CreateUniformBuffers()
         VkDeviceSize memoryOffset = 0;
         VkMemoryMapFlags flags = 0;
         vkMapMemory(mDevice, mUniformBuffersMemory[i], memoryOffset, bufferSize, flags, &mUniformBuffersMapped[i]);
+    }
+}
+
+void HelloTriangleApp::CreateDescriptorPool()
+{
+    // Descriptor sets need to be allocated from a descriptor pool, which is represented by a VkDescriptorPool object.
+    // A descriptor pool contains a certain number of descriptors, which are specified when creating the pool.
+
+    // VkDescriptorPoolSize struct:
+    // This struct contains the type of descriptor and the number of descriptors of that type to be allocated.
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSize.descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+
+    // VkDescriptorPoolCreateInfo struct:
+    // Information required by the driver to create a descriptor pool.
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+
+    VkAllocationCallbacks* allocator = nullptr;
+    if (vkCreateDescriptorPool(mDevice, &poolInfo, allocator, &mDescriptorPool) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create descriptor pool!");
+    }
+}
+
+void HelloTriangleApp::CreateDescriptorSets()
+{
+    // Allocate the descriptor.
+    // This is done with the vkAllocateDescriptorSets function,
+    // which takes a VkDescriptorSetAllocateInfo struct as a parameter:
+    std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, mDescriptorSetLayout);
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = mDescriptorPool;
+    allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+    allocInfo.pSetLayouts = layouts.data();
+
+    mDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+    VkAllocationCallbacks* allocator = nullptr;
+    if (vkAllocateDescriptorSets(mDevice, &allocInfo, mDescriptorSets.data()) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to allocate descriptor sets!");
+    }
+
+    // Update the descriptor sets with the buffer and image information that they refer to.
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = mUniformBuffers[i];
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(UniformBufferObject);
+
+        VkWriteDescriptorSet descriptorWrite{};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;     // Information required to specify how to update the descriptor set.
+        descriptorWrite.dstSet = mDescriptorSets[i];                        // The destination descriptor set to update.
+        descriptorWrite.dstBinding = 0;                                     // The binding within the set to update, which corresponds to a specific resource in the shader.
+        descriptorWrite.dstArrayElement = 0;                                // The first element in the array to update.
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // The type of descriptor.
+        descriptorWrite.descriptorCount = 1;                                // The number of descriptors to update.
+        descriptorWrite.pBufferInfo = &bufferInfo;                          // Pointer to the buffer info.
+        vkUpdateDescriptorSets(mDevice, 1, &descriptorWrite, 0, nullptr);
     }
 }
 
@@ -1752,11 +1835,20 @@ void HelloTriangleApp::RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32
         // Bind the vertex buffer.
         VkBuffer vertexBuffers[] = {mVertexBuffer};
         VkDeviceSize offsets[] = {0};
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets); 
 
         // Bind the index buffer.
         vkCmdBindIndexBuffer(commandBuffer, mIndexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,    // Type of pipeline the descriptor sets are bound for
+                                mPipelineLayout,
+                                0,                                  // Descriptor sets are organized by set number layout(set = 0, binding = 0) uniform UBO;. So, this is the index of the first descriptor set to bind.
+                                1,                                  // Number of descriptor sets to bind.
+                                &mDescriptorSets[mCurrentFrame],
+                                0,                                  // Dynamic offset count: Number of dynamic offsets.
+                                nullptr);                           // Dynamic offsets: Array of dynamic offsets.
+                                
         // Now issue the draw command using indexed drawing,
         // which means that the indices will be read from the index buffer and
         // the vertex data will be read from the vertex buffer based on those indices.
@@ -2190,6 +2282,7 @@ void HelloTriangleApp::Cleanup()
         vkFreeMemory(mDevice, mUniformBuffersMemory[i], nullptr);
     }
 
+    vkDestroyDescriptorPool(mDevice, mDescriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(mDevice, mDescriptorSetLayout, nullptr);
 
     vkDestroyBuffer(mDevice, mVertexBuffer, nullptr);
