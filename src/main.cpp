@@ -1,18 +1,22 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-#include <glm/glm.hpp>
 
-#include <iostream>
-#include <stdexcept>
+#define GLM_FORCE_RADIANS
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
-#include <vector>
+#include <fstream>
+#include <iostream>
+#include <limits>
 #include <optional>
 #include <set>
-#include <cstdint>
-#include <limits>
-#include <algorithm>
-#include <fstream>
-#include <array>
+#include <stdexcept>
+#include <vector>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -133,6 +137,13 @@ struct Vertex
     }
 };
 
+struct UniformBufferObject
+{
+    glm::mat4 mModel;
+    glm::mat4 mView;
+    glm::mat4 mProjection;
+};
+
 const std::vector<Vertex> kVertices =
 {
     {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
@@ -206,6 +217,7 @@ private:
     std::vector<VkFramebuffer> mSwapChainFramebuffers;
 
     VkRenderPass mRenderPass;
+    VkDescriptorSetLayout mDescriptorSetLayout;
     VkPipelineLayout mPipelineLayout;
     VkPipeline mGraphicsPipeline;
 
@@ -216,6 +228,10 @@ private:
     VkDeviceMemory mVertexBufferMemory;
     VkBuffer mIndexBuffer;
     VkDeviceMemory mIndexBufferMemory;
+
+    std::vector<VkBuffer> mUniformBuffers;
+    std::vector<VkDeviceMemory> mUniformBuffersMemory;
+    std::vector<void*> mUniformBuffersMapped;
 
     // Semaphores to signal that an image has been acquired from the swapchain and is ready for rendering.
     std::vector<VkSemaphore> mImageAvailableSemaphores;
@@ -395,6 +411,18 @@ private:
     void CreateIndexBuffer();
 
     /**
+    * @brief Create and initialize a list of VkBuffer objects for uniform data (according to the number of frames in flight).
+    *
+    */
+    void CreateUniformBuffers();
+
+    /**
+     * @brief Create and initialize a VkDescriptorSetLayout object.
+     * A descriptor set layout describes the shader resources that can be accessed from a pipeline.
+     */
+    
+    void CreateDescriptorSetLayout();
+    /**
      * @brief Create and initialize a VkBuffer object and its corresponding VkDeviceMemory object.
      * 
      * @param[in] size Size of the buffer.
@@ -452,6 +480,13 @@ private:
      * 
      */
     void DrawFrame();
+
+    /**
+     * @brief Update the contents of the uniform buffer for the current frame.
+     * 
+     * @param currentImage Index of the current frame.
+     */
+    void UpdateUniformBuffer(uint32_t currentImage);
 
     /**
      * @brief Create and initialize a VkShaderModule object from a bytecode buffer.
@@ -557,11 +592,13 @@ void HelloTriangleApp::InitVulkan()
     CreateSwapChain();
     CreateImageViews();
     CreateRenderPass();
+    CreateDescriptorSetLayout();
     CreateGraphicsPipeline();
     CreateFramebuffers();
     CreateCommandPool();
     CreateVertexBuffer();
     CreateIndexBuffer();
+    CreateUniformBuffers();
     CreateCommandBuffers();
     CreateSyncObjects();
 }
@@ -1086,6 +1123,39 @@ void HelloTriangleApp::CreateRenderPass()
     }
 }
 
+void HelloTriangleApp::CreateDescriptorSetLayout()
+{
+    // Descriptor sets are used to pass data to shaders. They are represented by VkDescriptorSetLayout objects that
+    // need to be created beforehand. A descriptor set layout describes the shader resources that can be accessed from a pipeline.
+
+    // VkDescriptorSetLayoutBinding struct:
+    // This struct describes a single binding within a descriptor set layout.
+    // It specifies:
+    // - The binding number used in the shader.
+    // - The type of descriptor (uniform buffer, storage buffer, sampler, etc.).
+    // - The number of descriptors associated with the binding.
+    // - The shader stages that are allowed to access the resource.
+    // - Optional immutable samplers for sampler descriptors.
+    VkDescriptorSetLayoutBinding uboLayoutBinding{};
+    uboLayoutBinding.binding = 0; // The binding number referenced in the shader.
+    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // The type of resource (uniform buffer)
+    uboLayoutBinding.descriptorCount = 1;
+    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; // The shader stage that will access this resource (vertex shader)
+    uboLayoutBinding.pImmutableSamplers = nullptr; // Optional
+
+    // VkDescriptorSetLayoutCreateInfo struct:
+    // Information required by the driver to create a descriptor set layout.
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &uboLayoutBinding;
+
+    if (vkCreateDescriptorSetLayout(mDevice, &layoutInfo, nullptr, &mDescriptorSetLayout) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create descriptor set layout!");
+    }
+}
+
 void HelloTriangleApp::CreateGraphicsPipeline()
 {
     auto vertShaderCode = ReadFile("shaders/shader.vert.spv");
@@ -1455,6 +1525,26 @@ void HelloTriangleApp::CreateIndexBuffer()
     vkFreeMemory(mDevice, stagingBufferMemory, allocator);
 }
 
+void HelloTriangleApp::CreateUniformBuffers()
+{
+    VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+    mUniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+    mUniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
+    mUniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT); // Keep the mapped pointers to the uniform buffers so that we can write to them easily at draw time.
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        VkBufferUsageFlags usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        CreateBuffer(bufferSize, usage, properties, mUniformBuffers[i], mUniformBuffersMemory[i]);
+
+        VkDeviceSize memoryOffset = 0;
+        VkMemoryMapFlags flags = 0;
+        vkMapMemory(mDevice, mUniformBuffersMemory[i], memoryOffset, bufferSize, flags, &mUniformBuffersMapped[i]);
+    }
+}
+
 void HelloTriangleApp::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory)
 {
     // Buffers in Vulkan are regions of memory used for storing arbitrary data that can be read by the graphics card.
@@ -1716,6 +1806,23 @@ void HelloTriangleApp::CreateSyncObjects()
     }
 }
 
+void HelloTriangleApp::UpdateUniformBuffer(uint32_t currentImage)
+{
+    static auto startTime = std::chrono::high_resolution_clock::now();
+
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+
+    UniformBufferObject ubo{};
+    ubo.mModel = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.mView = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 00.0f, 1.0f));
+    ubo.mProjection = glm::perspective(glm::radians(45.0f), mSwapChainExtent.width / (float)mSwapChainExtent.height, 0.1f, 10.0f);
+    ubo.mProjection[1][1] *= -1; // Invert the Y coordinate of the clip coordinates, because GLM was originally designed for OpenGL, where the Y coordinate of the clip coordinates is inverted.
+
+    // Copy the data to the mapped uniform buffer.
+    memcpy(mUniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+}
+
 void HelloTriangleApp::DrawFrame()
 {
     // Rendering a frame in Vulkan consists of common set of steps:
@@ -1780,6 +1887,8 @@ void HelloTriangleApp::DrawFrame()
     {
         throw std::runtime_error("Failed to acquire swap chain image!");
     }
+
+    UpdateUniformBuffer(mCurrentFrame);
 
     // (Only reset the fence if we are submitting work)
     // After waiting, we need to manually reset the fence to the unsignaled state with the vkResetFences call:
@@ -2074,6 +2183,14 @@ void HelloTriangleApp::Cleanup()
     vkDestroyPipeline(mDevice, mGraphicsPipeline, nullptr);
     vkDestroyPipelineLayout(mDevice, mPipelineLayout, nullptr);
     vkDestroyRenderPass(mDevice, mRenderPass, nullptr);
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        vkDestroyBuffer(mDevice, mUniformBuffers[i], nullptr);
+        vkFreeMemory(mDevice, mUniformBuffersMemory[i], nullptr);
+    }
+
+    vkDestroyDescriptorSetLayout(mDevice, mDescriptorSetLayout, nullptr);
 
     vkDestroyBuffer(mDevice, mVertexBuffer, nullptr);
     vkFreeMemory(mDevice, mVertexBufferMemory, nullptr);
