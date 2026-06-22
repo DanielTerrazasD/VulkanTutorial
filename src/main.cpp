@@ -5,6 +5,9 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -224,6 +227,9 @@ private:
     VkCommandPool mCommandPool;
     std::vector<VkCommandBuffer> mCommandBuffers;
 
+    VkImage mTextureImage;
+    VkDeviceMemory mTextureImageMemory;
+
     VkBuffer mVertexBuffer;
     VkDeviceMemory mVertexBufferMemory;
     VkBuffer mIndexBuffer;
@@ -402,6 +408,46 @@ private:
     void CreateCommandPool();
 
     /**
+     * @brief Create and initialize a VkImage object for a texture.
+     * 
+     */
+    void CreateTextureImage();
+
+    /**
+     * @brief Create and initialize a VkImage object with the given parameters and its corresponding VkDeviceMemory object.
+     * 
+     * @param width Width of the image.
+     * @param height Height of the image.
+     * @param format Format of the image.
+     * @param tiling Tiling mode of the image.
+     * @param usage Usage flags for the image.
+     * @param properties Memory properties flags.
+     * @param image Reference to the VkImage object to create.
+     * @param imageMemory Reference to the VkDeviceMemory object to allocate.
+     */
+    void CreateImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
+
+    /**
+     * @brief Transition the image layout of a VkImage object.
+     * 
+     * @param image The image to transition.
+     * @param format The format of the image.
+     * @param oldLayout The current layout of the image.
+     * @param newLayout The new layout to transition the image to.
+     */
+    void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+
+    /**
+     * @brief Copy the pixel data from a VkBuffer object to a VkImage object.
+     * 
+     * @param buffer Source buffer.
+     * @param image Destination image.
+     * @param width Width of the image.
+     * @param height Height of the image.
+     */
+    void CopyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+
+    /**
      * @brief Create and initialize a VkBuffer for vertex data.
      * 
      */
@@ -461,6 +507,20 @@ private:
      * 
      */
     void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+
+    /**
+     * @brief Begin recording a single-use command buffer.
+     * 
+     * @return VkCommandBuffer The command buffer to record commands into.
+     */
+    VkCommandBuffer BeginSingleTimeCommands();
+
+    /**
+     * @brief End recording a single-use command buffer and submit it.
+     * 
+     * @param commandBuffer The command buffer to end and submit.
+     */
+    void EndSingleTimeCommands(VkCommandBuffer commandBuffer);
 
     /**
      * @brief Find the index of a memory type with the specified properties.
@@ -612,6 +672,7 @@ void HelloTriangleApp::InitVulkan()
     CreateGraphicsPipeline();
     CreateFramebuffers();
     CreateCommandPool();
+    CreateTextureImage();
     CreateVertexBuffer();
     CreateIndexBuffer();
     CreateUniformBuffers();
@@ -1176,8 +1237,8 @@ void HelloTriangleApp::CreateDescriptorSetLayout()
 
 void HelloTriangleApp::CreateGraphicsPipeline()
 {
-    auto vertShaderCode = ReadFile("shaders/shader.vert.spv");
-    auto fragShaderCode = ReadFile("shaders/shader.frag.spv");
+    auto vertShaderCode = ReadFile("assets/shaders/shader.vert.spv");
+    auto fragShaderCode = ReadFile("assets/shaders/shader.frag.spv");
 
     VkShaderModule vertShaderModule = CreateShaderModule(vertShaderCode);
     VkShaderModule fragShaderModule = CreateShaderModule(fragShaderCode);
@@ -1474,6 +1535,215 @@ void HelloTriangleApp::CreateCommandPool()
     }
 }
 
+void HelloTriangleApp::CreateTextureImage()
+{
+    // Load the texture image using the stb_image library and create a staging buffer to hold the pixel data before copying it to the GPU.
+    int texWidth, texHeight, texChannels;
+    stbi_uc* pixels = stbi_load("assets/textures/texture.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+    VkDeviceSize imageSize = texWidth * texHeight * 4; // 4 bytes per pixel (RGBA)
+
+    if (!pixels)
+    {
+        throw std::runtime_error("Failed to load texture image!");
+    }
+
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    CreateBuffer(imageSize, usage, properties, stagingBuffer, stagingBufferMemory);
+
+    void* data;
+    VkDeviceSize offset = 0;
+    VkMemoryMapFlags flags = 0;
+    vkMapMemory(mDevice, stagingBufferMemory, offset, imageSize, flags, &data);
+        memcpy(data, pixels, static_cast<size_t>(imageSize));
+    vkUnmapMemory(mDevice, stagingBufferMemory);
+
+    stbi_image_free(pixels);
+
+    CreateImage(texWidth, texHeight,
+                VK_FORMAT_R8G8B8A8_SRGB,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                mTextureImage,
+                mTextureImageMemory);
+
+    // Transition the texture image to the optimal layout for receiving data from the staging buffer.
+    TransitionImageLayout(mTextureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        // Copy the data from the staging buffer to the texture image.
+        CopyBufferToImage(stagingBuffer, mTextureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
+    // Transition the texture image to the optimal layout for shader access.
+    TransitionImageLayout(mTextureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    vkDestroyBuffer(mDevice, stagingBuffer, nullptr);
+    vkFreeMemory(mDevice, stagingBufferMemory, nullptr);
+}
+
+void HelloTriangleApp::CreateImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory)
+{
+    // VkImageCreateInfo struct:
+    // It specifies:
+    // - The type of image (1D, 2D, or 3D)
+    // - The dimensions of the image
+    // - The number of mipmap levels
+    // - The number of array layers
+    // - The format of the image
+    // - The tiling mode
+    // - The initial layout
+    // - The usage flags
+    // - The number of samples per texel
+    // - The sharing mode
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = width;
+    imageInfo.extent.height = height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = format;
+    imageInfo.tiling = tiling;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = usage;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateImage(mDevice, &imageInfo, nullptr, &image) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create image!");
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(mDevice, image, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, properties);
+
+    VkAllocationCallbacks* allocator = nullptr;
+    if (vkAllocateMemory(mDevice, &allocInfo, allocator, &imageMemory) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to allocate image memory!");
+    }
+
+    VkDeviceSize memoryOffset = 0;
+    vkBindImageMemory(mDevice, image, imageMemory, memoryOffset);
+}
+
+void HelloTriangleApp::TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout)
+{
+    VkCommandBuffer commandBuffer = BeginSingleTimeCommands();
+
+    // Use a memory barrier to transition the image layout. A memory barrier describes a dependency between commands submitted to the command buffer and is used to synchronize access to resources.
+    // VkImageMemoryBarrier struct:
+    // It specifies:
+    // - The type of the structure
+    // - The old layout of the image
+    // - The new layout of the image
+    // - The source queue family index
+    // - The destination queue family index
+    // - The image to transition
+    // - The subresource range of the image
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkPipelineStageFlags sourceStage;
+    VkPipelineStageFlags destinationStage;
+
+    // Determine the source and destination stages based on the old and new layouts.
+    // The source stage should be the earliest possible pipeline stage that can access the resource in the old layout,
+    // and the destination stage should be the latest possible pipeline stage that can access the resource in the new layout.
+    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+    {
+        // The old layout doesn't require any specific access mask, it can be left at 0.
+        barrier.srcAccessMask = 0;
+        // The new layout will be used as a transfer destination, so we need to wait for any transfer writes to complete.
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+        // The top of the pipe stage is a pseudo stage that occurs before any other stage in the pipeline, so it doesn't wait on anything.
+        sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+         // The transfer stage is a pipeline stage that performs memory transfers.
+        destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    {
+        // The old layout was used as a transfer destination, so we need to wait for any transfer writes to complete.
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        // The new layout will be used for shader reads, so we need to wait for any shader reads to complete.
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    }
+    else
+    {
+        throw std::invalid_argument("Unsupported layout transition!");
+    }
+
+    VkDependencyFlags dependencyFlags = 0;
+    uint32_t memoryBarrierCount = 0;
+    const VkMemoryBarrier* pMemoryBarriers = nullptr;
+    uint32_t bufferMemoryBarrierCount = 0;
+    const VkBufferMemoryBarrier* pBufferMemoryBarriers = nullptr;
+    uint32_t imageMemoryBarrierCount = 1;
+    const VkImageMemoryBarrier* pImageMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        sourceStage, destinationStage,
+        dependencyFlags,
+        memoryBarrierCount, pMemoryBarriers,
+        bufferMemoryBarrierCount, pBufferMemoryBarriers,
+        imageMemoryBarrierCount, pImageMemoryBarriers
+    );
+
+    EndSingleTimeCommands(commandBuffer);
+}
+
+void HelloTriangleApp::CopyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
+{
+    VkCommandBuffer commandBuffer = BeginSingleTimeCommands();
+
+    // Use a VkBufferImageCopy struct to specify the details of the copy from a buffer to an image:
+    // It specifies:
+    // - The buffer offset, row length and image height (for specifying the data in the buffer as a subregion of a larger one).
+    // - The image subresource (which aspect of the image to copy to and which mip
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {width, height, 1};
+
+    uint32_t regionCount = 1;
+    vkCmdCopyBufferToImage(
+        commandBuffer,
+        buffer,
+        image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        regionCount,
+        &region
+    );
+
+    EndSingleTimeCommands(commandBuffer);
+}
+
 void HelloTriangleApp::CreateVertexBuffer()
 {
     VkDeviceSize bufferSize = sizeof(kVertices[0]) * kVertices.size();
@@ -1674,7 +1944,7 @@ void HelloTriangleApp::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
     vkBindBufferMemory(mDevice, buffer, bufferMemory, memoryOffset);
 }
 
-void HelloTriangleApp::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+VkCommandBuffer HelloTriangleApp::BeginSingleTimeCommands()
 {
     // To copy data from one buffer to another, we need to record a command buffer with the copy command and submit it to a queue.
     VkCommandBufferAllocateInfo allocInfo{};
@@ -1692,14 +1962,11 @@ void HelloTriangleApp::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDevi
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
     vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    return commandBuffer;
+}
 
-        // The region of data to copy between the buffers is specified in a VkBufferCopy struct.
-        VkBufferCopy copyRegion{};
-        copyRegion.srcOffset = 0; // Optional
-        copyRegion.dstOffset = 0; // Optional
-        copyRegion.size = size;
-        vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
-
+void HelloTriangleApp::EndSingleTimeCommands(VkCommandBuffer commandBuffer)
+{
     vkEndCommandBuffer(commandBuffer);
 
     // Submit the command buffer to the graphics queue and wait for it to finish:
@@ -1715,6 +1982,20 @@ void HelloTriangleApp::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDevi
     vkQueueWaitIdle(mGraphicsQueue);
 
     vkFreeCommandBuffers(mDevice, mCommandPool, 1, &commandBuffer);
+}
+
+void HelloTriangleApp::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+{
+    VkCommandBuffer commandBuffer = BeginSingleTimeCommands();
+
+    VkBufferCopy copyRegion{};
+    copyRegion.srcOffset = 0; // Optional
+    copyRegion.dstOffset = 0; // Optional
+    copyRegion.size = size;
+    uint32_t regionCount = 1;
+    vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, regionCount, &copyRegion);
+
+    EndSingleTimeCommands(commandBuffer);
 }
 
 uint32_t HelloTriangleApp::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
@@ -2283,6 +2564,10 @@ void HelloTriangleApp::Cleanup()
     }
 
     vkDestroyDescriptorPool(mDevice, mDescriptorPool, nullptr);
+
+    vkDestroyImage(mDevice, mTextureImage, nullptr);
+    vkFreeMemory(mDevice, mTextureImageMemory, nullptr);
+
     vkDestroyDescriptorSetLayout(mDevice, mDescriptorSetLayout, nullptr);
 
     vkDestroyBuffer(mDevice, mVertexBuffer, nullptr);
