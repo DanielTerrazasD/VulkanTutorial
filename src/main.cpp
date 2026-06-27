@@ -229,6 +229,8 @@ private:
 
     VkImage mTextureImage;
     VkDeviceMemory mTextureImageMemory;
+    VkImageView mTextureImageView;
+    VkSampler mTextureSampler;
 
     VkBuffer mVertexBuffer;
     VkDeviceMemory mVertexBufferMemory;
@@ -446,6 +448,27 @@ private:
      * @param height Height of the image.
      */
     void CopyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+
+    /**
+     * @brief Create and initialize a VkImageView object for a texture.
+     * 
+     */
+    void CreateTextureImageView();
+
+    /**
+     * @brief Create and initialize a VkSampler object for a texture.
+     * 
+     */
+    void CreateTextureSampler();
+
+    /**
+     * @brief Create and initialize a VkImageView object for a given VkImage object.
+     * 
+     * @param image The image to create the view for.
+     * @param format The format of the image.
+     * @return VkImageView The created image view.
+     */
+    VkImageView CreateImageView(VkImage image, VkFormat format);
 
     /**
      * @brief Create and initialize a VkBuffer for vertex data.
@@ -673,6 +696,8 @@ void HelloTriangleApp::InitVulkan()
     CreateFramebuffers();
     CreateCommandPool();
     CreateTextureImage();
+    CreateTextureImageView();
+    CreateTextureSampler();
     CreateVertexBuffer();
     CreateIndexBuffer();
     CreateUniformBuffers();
@@ -1079,33 +1104,7 @@ void HelloTriangleApp::CreateImageViews()
 
     for (size_t i = 0; i < mSwapChainImages.size(); i++)
     {
-        // VkImageViewCreateInfo struct:
-        // Information required by the driver to create an image view.
-        VkImageViewCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        createInfo.image = mSwapChainImages[i];
-        // The viewType and format fields specify how the image data should be interpreted.
-        // The viewType parameter allows you to treat images as 1D, 2D, 3D textures and cube maps.
-        createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        createInfo.format = mSwapChainImageFormat;
-        // The components field allows you to swizzle the color channels around.
-        // For example, you can map all of the channels to the red channel for a monochrome texture.
-        createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-        // The subresourceRange field describes what the image's purpose is and which part of the image should be accessed.
-        // Our images will be used as color targets without any mipmapping levels or multiple layers.
-        createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        createInfo.subresourceRange.baseMipLevel = 0;
-        createInfo.subresourceRange.levelCount = 1;
-        createInfo.subresourceRange.baseArrayLayer = 0;
-        createInfo.subresourceRange.layerCount = 1;
-        // Issue the Vulkan create image view call and check for errors:
-        if (vkCreateImageView(mDevice, &createInfo, nullptr, &mSwapChainImageViews[i]) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create image views!");
-        }
+        mSwapChainImageViews[i] = CreateImageView(mSwapChainImages[i], mSwapChainImageFormat);
     }
 }
 
@@ -1579,6 +1578,61 @@ void HelloTriangleApp::CreateTextureImage()
 
     vkDestroyBuffer(mDevice, stagingBuffer, nullptr);
     vkFreeMemory(mDevice, stagingBufferMemory, nullptr);
+}
+
+void HelloTriangleApp::CreateTextureImageView()
+{
+    mTextureImageView = CreateImageView(mTextureImage, VK_FORMAT_R8G8B8A8_SRGB);
+}
+
+void HelloTriangleApp::CreateTextureSampler()
+{
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(mPhysicalDevice, &properties);
+
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.anisotropyEnable = VK_TRUE;
+    samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+    VkAllocationCallbacks* allocator = nullptr;
+    if (vkCreateSampler(mDevice, &samplerInfo, allocator, &mTextureSampler) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create texture sampler!");
+    }
+}
+
+VkImageView HelloTriangleApp::CreateImageView(VkImage image, VkFormat format)
+{
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    VkImageView imageView;
+    VkAllocationCallbacks* allocator = nullptr;
+    if (vkCreateImageView(mDevice, &viewInfo, allocator, &imageView) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create texture image view!");
+    }
+
+    return imageView;
 }
 
 void HelloTriangleApp::CreateImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory)
@@ -2402,9 +2456,14 @@ bool HelloTriangleApp::IsDeviceSuitable(VkPhysicalDevice device)
         SwapChainSupportDetails swapChainSupport = QuerySwapChainSupport(device);
         isSwapChainAdequate = !swapChainSupport.mFormats.empty() && !swapChainSupport.mPresentModes.empty();
     }
+
+    VkPhysicalDeviceFeatures supportedFeatures;
+    vkGetPhysicalDeviceFeatures(device, &supportedFeatures);
+
     return  indices.IsComplete() &&
             extensionsSupported &&
-            isSwapChainAdequate;
+            isSwapChainAdequate &&
+            supportedFeatures.samplerAnisotropy;
 }
 
 QueueFamilyIndices HelloTriangleApp::FindQueueFamilies(VkPhysicalDevice device)
@@ -2469,6 +2528,7 @@ void HelloTriangleApp::CreateLogicalDevice()
     // Specify the feature we need from the physical device.
     // Leaving as default for now.
     VkPhysicalDeviceFeatures deviceFeatures{};
+    deviceFeatures.samplerAnisotropy = VK_TRUE; // Enable anisotropic filtering.
 
     // VkDeviceCreateInfo struct:
     // Information required by the driver to create the logical device.
@@ -2565,6 +2625,8 @@ void HelloTriangleApp::Cleanup()
 
     vkDestroyDescriptorPool(mDevice, mDescriptorPool, nullptr);
 
+    vkDestroySampler(mDevice, mTextureSampler, nullptr);
+    vkDestroyImageView(mDevice, mTextureImageView, nullptr);
     vkDestroyImage(mDevice, mTextureImage, nullptr);
     vkFreeMemory(mDevice, mTextureImageMemory, nullptr);
 
