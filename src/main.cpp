@@ -88,6 +88,7 @@ struct Vertex
 {
     glm::vec2 mPosition;
     glm::vec3 mColor;
+    glm::vec2 mTexCoord;
 
     // A vertex binding describes at which rate to load data from memory throughout the vertices.
     // It specifies the number of bytes between data entries and whether to move to the next data
@@ -109,10 +110,10 @@ struct Vertex
 
     // An attribute description struct describes how to extract a vertex attribute from a chunk of
     // vertex data originating from a binding description.
-    static std::array<VkVertexInputAttributeDescription, 2> GetAttributeDescriptions()
+    static std::array<VkVertexInputAttributeDescription, 3> GetAttributeDescriptions()
     {
-        // We have two attributes, position and color, so we need two attribute description structs.
-        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+        // We have three attributes, position, color, and texture coordinates, so we need three attribute description structs.
+        std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
 
         // The binding parameter tells Vulkan from which binding the per-vertex data comes.
         attributeDescriptions[0].binding = 0;
@@ -136,6 +137,11 @@ struct Vertex
         attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[1].offset = offsetof(Vertex, mColor);
 
+        attributeDescriptions[2].binding = 0;
+        attributeDescriptions[2].location = 2;
+        attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[2].offset = offsetof(Vertex, mTexCoord);
+
         return attributeDescriptions;
     }
 };
@@ -149,10 +155,10 @@ struct UniformBufferObject
 
 const std::vector<Vertex> kVertices =
 {
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}
 };
 
 const std::vector<uint16_t> kIndices =
@@ -1221,12 +1227,21 @@ void HelloTriangleApp::CreateDescriptorSetLayout()
     uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; // The shader stage that will access this resource (vertex shader)
     uboLayoutBinding.pImmutableSamplers = nullptr; // Optional
 
+    VkDescriptorSetLayoutBinding samplerLayoutBinding{};
+    samplerLayoutBinding.binding = 1; // The binding number referenced in the shader.
+    samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // The type of resource (sampler)
+    samplerLayoutBinding.descriptorCount = 1;
+    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; // The shader stage that will access this resource (fragment shader)
+    samplerLayoutBinding.pImmutableSamplers = nullptr; // Optional
+
+    std::array<VkDescriptorSetLayoutBinding, 2> bindings = {uboLayoutBinding, samplerLayoutBinding};
+
     // VkDescriptorSetLayoutCreateInfo struct:
     // Information required by the driver to create a descriptor set layout.
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &uboLayoutBinding;
+    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.pBindings = bindings.data();
 
     if (vkCreateDescriptorSetLayout(mDevice, &layoutInfo, nullptr, &mDescriptorSetLayout) != VK_SUCCESS)
     {
@@ -1894,16 +1909,18 @@ void HelloTriangleApp::CreateDescriptorPool()
 
     // VkDescriptorPoolSize struct:
     // This struct contains the type of descriptor and the number of descriptors of that type to be allocated.
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSize.descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 
     // VkDescriptorPoolCreateInfo struct:
     // Information required by the driver to create a descriptor pool.
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
     poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 
     VkAllocationCallbacks* allocator = nullptr;
@@ -1940,15 +1957,30 @@ void HelloTriangleApp::CreateDescriptorSets()
         bufferInfo.offset = 0;
         bufferInfo.range = sizeof(UniformBufferObject);
 
-        VkWriteDescriptorSet descriptorWrite{};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;     // Information required to specify how to update the descriptor set.
-        descriptorWrite.dstSet = mDescriptorSets[i];                        // The destination descriptor set to update.
-        descriptorWrite.dstBinding = 0;                                     // The binding within the set to update, which corresponds to a specific resource in the shader.
-        descriptorWrite.dstArrayElement = 0;                                // The first element in the array to update.
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // The type of descriptor.
-        descriptorWrite.descriptorCount = 1;                                // The number of descriptors to update.
-        descriptorWrite.pBufferInfo = &bufferInfo;                          // Pointer to the buffer info.
-        vkUpdateDescriptorSets(mDevice, 1, &descriptorWrite, 0, nullptr);
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = mTextureImageView;
+        imageInfo.sampler = mTextureSampler;
+
+        std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+        descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;     // Information required to specify how to update the descriptor set.
+        descriptorWrites[0].dstSet = mDescriptorSets[i];                        // The destination descriptor set to update.
+        descriptorWrites[0].dstBinding = 0;                                     // The binding within the set to update, which corresponds to a specific resource in the shader.
+        descriptorWrites[0].dstArrayElement = 0;                                // The first element in the array to update.
+        descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // The type of descriptor.
+        descriptorWrites[0].descriptorCount = 1;                                // The number of descriptors to update.
+        descriptorWrites[0].pBufferInfo = &bufferInfo;                          // Pointer to the buffer info.
+
+        descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[1].dstSet = mDescriptorSets[i];
+        descriptorWrites[1].dstBinding = 1;
+        descriptorWrites[1].dstArrayElement = 0;
+        descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrites[1].descriptorCount = 1;
+        descriptorWrites[1].pImageInfo = &imageInfo;
+
+        uint32_t descriptorCopyCount = 0;
+        vkUpdateDescriptorSets(mDevice, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), descriptorCopyCount, nullptr);
     }
 }
 
